@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cogball replay</title>
+<style>
+  /* --- chrome, carried over from the cogame-moba starter verbatim --- */
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; min-height: 100vh; background: #0b1414; color: #cfe;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  header { margin: 10px 0 4px; font-size: 14px; color: #6db; }
+  #stage { position: relative; }
+  canvas {
+    display: block; background: #000; max-width: 100vw; height: auto;
+    image-rendering: pixelated;
+  }
+  #status {
+    position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; font-size: 16px; color: #9cc;
+    pointer-events: none; text-align: center; white-space: pre-line;
+  }
+  #controls {
+    display: flex; gap: 10px; align-items: center; margin: 10px 0;
+    flex-wrap: wrap; justify-content: center;
+  }
+  button, select {
+    background: #12302c; color: #cfe; border: 1px solid #2a5;
+    border-radius: 4px; font: inherit; padding: 4px 12px; cursor: pointer;
+  }
+  button:disabled { opacity: .4; cursor: default; }
+  #seek { width: 380px; }
+  #tickinfo { min-width: 130px; text-align: center; }
+  #endcard {
+    margin: 4px 0 10px; font-size: 15px; color: #fd5; min-height: 1.2em;
+  }
+  #warn { margin: 2px 0 6px; font-size: 13px; color: #fa4; }
+
+  /* --- cogball additions --- */
+  #scorebug {
+    position: absolute; left: 8px; top: 8px; display: flex;
+    align-items: center; gap: .5em; padding: .35em .7em;
+    background: rgba(6, 18, 18, .82); border: 1px solid #1d4a44;
+    border-radius: 6px; font-size: clamp(10px, 3.2vw, 15px);
+    max-width: calc(100% - 16px); line-height: 1.25;
+  }
+  .chip {
+    width: .8em; height: .8em; border-radius: 2px; flex: 0 0 auto;
+  }
+  .plate-name { flex: 1 1 auto; min-width: 3.2em; overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }
+  .plate-goals { font-weight: bold; flex: 0 0 auto; }
+  .bug-sep { opacity: .6; flex: 0 0 auto; }
+  #bug-clock { margin-left: .6em; color: #9dd; flex: 0 0 auto; }
+  #bug-turn { color: #7aa; flex: 0 0 auto; }
+  #bug-poss {
+    width: .6em; height: .6em; border-radius: 50%; background: #567;
+    flex: 0 0 auto;
+  }
+  #goalbanner {
+    position: absolute; left: 50%; top: 18%; transform: translateX(-50%);
+    font-size: clamp(18px, 6vw, 44px); font-weight: bold; letter-spacing: .06em;
+    color: #fff; text-shadow: 0 0 18px currentColor; pointer-events: none;
+    opacity: 0; transition: opacity .12s linear;
+  }
+  #goalbanner.on { opacity: 1; }
+  #feed {
+    width: 100%; max-width: 1008px; margin: 0 0 12px; padding: 0 8px;
+    box-sizing: border-box; font-size: 12px; color: #9cc; line-height: 1.5;
+    min-height: 6em;
+  }
+  #feed div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #feed .goal { color: #fd5; font-weight: bold; }
+  #feed .save { color: #6cf; }
+  #feed .coach { color: #8d9; }
+
+  /* The featured-match iframe on softmax.com is ~360 px wide: the scorebug
+     has to stay legible there, so the secondary labels go away and the feed
+     collapses to a two-line ticker under the canvas. */
+  @media (max-width: 640px) {
+    #bug-turn, #bug-poss, #speedlabel { display: none; }
+    #seek { width: 60vw; }
+    #tickinfo { min-width: 0; font-size: 11px; }
+    #feed { min-height: 3em; max-height: 3em; overflow: hidden; }
+    header { font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+<header>cogball replay viewer</header>
+<div id="stage">
+  <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+  <div id="status">loading wasm ...</div>
+  <div id="scorebug">
+    <span class="chip" id="chip-a"></span>
+    <span class="plate-name" id="name-a">-</span>
+    <span class="plate-goals" id="goals-a">0</span>
+    <span class="bug-sep">&ndash;</span>
+    <span class="plate-goals" id="goals-b">0</span>
+    <span class="plate-name" id="name-b">-</span>
+    <span class="chip" id="chip-b"></span>
+    <span id="bug-clock">00:00 / 00:00</span>
+    <span id="bug-turn">turn 0/0</span>
+    <span id="bug-poss"></span>
+  </div>
+  <div id="goalbanner"></div>
+</div>
+<div id="controls">
+  <button id="playpause" disabled>play</button>
+  <span id="speedlabel">speed</span>
+  <select id="speed" disabled>
+    <option value="100">1x</option>
+    <option value="400">4x</option>
+    <option value="1600">16x</option>
+    <option value="6400">64x</option>
+  </select>
+  <input id="seek" type="range" min="0" max="0" value="0" step="1" disabled>
+  <span id="tickinfo">- / -</span>
+  <button id="heat">heat: on</button>
+</div>
+<div id="endcard"></div>
+<div id="warn"></div>
+<div id="feed"></div>
+
+<script src="static_replay.js"></script>
+<script src="sim_sha.js"></script>
+<script src="cogball_viewer.js"></script>
+</body>
+</html>
