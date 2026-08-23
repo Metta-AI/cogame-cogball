@@ -235,13 +235,6 @@ proc startGame*(sim: var SimServer) =
   sim.freezeUntil = int32(sim.tickCount) + KickoffFreezeTicks
   sim.logGameEvent("match start, kickoff for seat " & $sim.restartSeat)
 
-proc shouldAbortFiniteMatch*(sim: SimServer): bool =
-  ## A finite match whose LOBBY roster fell back below minPlayers after having
-  ## formed. Once play starts a dropped seat keeps playing on the scripted
-  ## layer (docs/RULES.md §Disconnects), so this is a lobby concern only.
-  sim.phase == Lobby and sim.gameStartTick >= 0 and
-    sim.players.len < sim.config.minPlayers
-
 # --------------------------------------------------------------------------
 # Kicks
 # --------------------------------------------------------------------------
