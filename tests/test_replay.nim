@@ -330,6 +330,12 @@ proc run() =
     if directive["source"].getStr() == "fallback":
       inc fellBack
   doAssert summary["fallbacks"].getInt == fellBack
+  # The strict-UTF-8 promise must come from the BYTES, not from the reader
+  # healing them: replay_summary.py decodes strictly first and counts every
+  # string it had to repair, so a clean replay reports zero.
+  doAssert summary["utf8Repairs"].getInt == 0,
+    "replay_summary.py had to repair " & $summary["utf8Repairs"].getInt &
+      " string(s): the writer's rune truncation is broken"
   report "replay_summary.py output parses under a strict UTF-8 JSON parser"
 
   # ---- the reason is in the legal enum -------------------------------------

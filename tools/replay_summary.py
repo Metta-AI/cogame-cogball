@@ -41,6 +41,7 @@ class Reader:
     def __init__(self, data):
         self.data = data
         self.at = 0
+        self.repaired = 0        # strings the replay bytes could not decode
 
     def take(self, count):
         if self.at + count > len(self.data):
@@ -65,7 +66,20 @@ class Reader:
         return struct.unpack("<Q", self.take(8))[0]
 
     def text(self):
-        return self.take(self.u16()).decode("utf-8", "replace")
+        # Strict FIRST. This script's promise is strict-UTF-8 JSON on stdout,
+        # and decoding everything with errors="replace" would meet that promise
+        # by construction rather than because the replay bytes are clean -- a
+        # byte-truncated string would be silently healed into U+FFFD and the
+        # reader would never learn that the writer's rune discipline had
+        # failed. So a repair is still made (a forensics tool must not die on
+        # the bytes it exists to diagnose) but it is COUNTED, and main() says
+        # so on stderr.
+        raw = self.take(self.u16())
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            self.repaired += 1
+            return raw.decode("utf-8", "replace")
 
     def blob(self):
         return self.take(self.u32())
@@ -236,6 +250,7 @@ def parse(raw):
         "policyLabels": labels,
         "tickCount": ticks,
         "hashChain": "%016x" % chain,
+        "utf8Repairs": reader.repaired,
         "inputRecords": inputs,
         "directives": directives,
         "fallbacks": fallbacks,
@@ -251,6 +266,14 @@ def main(argv):
         return 2
     with open(argv[1], "rb") as handle:
         summary = parse(handle.read())
+    # A repair means the REPLAY BYTES were not clean, not that this script
+    # coped: say so loudly on stderr, where it cannot corrupt the JSON on
+    # stdout that the caller parses.
+    if summary["utf8Repairs"]:
+        sys.stderr.write(
+            "WARNING: %d string(s) in this replay are not valid UTF-8 and were "
+            "repaired with U+FFFD; the writer's rune truncation is broken\n"
+            % summary["utf8Repairs"])
     # ensure_ascii=False so a non-ASCII policy label or `say` stays itself; the
     # caller is promised STRICT UTF-8 JSON on stdout.
     sys.stdout.buffer.write(
