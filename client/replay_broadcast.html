@@ -155,7 +155,7 @@ html, body {
   letter-spacing: .04em; white-space: nowrap; }
 .plate .liverychip { width: calc(8 * var(--u)); height: calc(8 * var(--u));
   border-radius: 2px; flex: 0 0 auto; }
-/* Under .tiny (boardW <= 620, the 640x360 floor) the plates read
+/* Under .tiny (boardW <= 640, the 640x360 floor) the plates read
    "name goals - goals name" plus the clock, and nothing else. */
 #stage.tiny .plate .stat { display: none; }
 #stage.tiny .plate .squad { display: none; }
@@ -1442,7 +1442,7 @@ html, body {
    single unit and stay pinned. The only responsive lever is chrome DENSITY —
    `.tiny` eases the reserves so the 640×360 floor stays legible.
    ============================================================ */
-/* very small floor (≤620px stage): tighten reserves */
+/* very small floor (≤640px stage): tighten reserves */
 #stage.tiny #killfeed { min-height: calc(3 * 20 * var(--u)); width: calc(190 * var(--u)); }
 #stage.tiny .plate .squad-pip { width: calc(6 * var(--u)); height: calc(6 * var(--u)); }
 
@@ -2720,7 +2720,9 @@ body[data-noviewpanel] #viewpanel { display: none !important; }
       // chrome and a tiny 360px floor stays legible).
       var scale = Math.max(0.5, Math.min(1.6, boardW / 760));
       root.style.setProperty('--hudscale', scale.toFixed(3));
-      stage.classList.toggle('tiny', boardW <= 620);
+      // The 640x360 embed floor: at or under 640 CSS px of board the plates
+      // drop their possession/shots stats and read "name goals - goals name".
+      stage.classList.toggle('tiny', boardW <= 640);
       // Measure each band's natural height → reserve exactly that.
       topBand = scorebug ? scorebug.offsetHeight : 0;
       band = transport ? transport.offsetHeight : 0;

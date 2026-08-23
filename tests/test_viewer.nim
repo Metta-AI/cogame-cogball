@@ -38,7 +38,7 @@ proc densitySystem() =
   must(broadcastHtml, "--hudscale", "the density system")
   must(broadcastHtml, "Math.max(0.5, Math.min(1.6, boardW / 760))",
     "the --hudscale clamp")
-  must(broadcastHtml, "stage.classList.toggle('tiny', boardW <= 620)",
+  must(broadcastHtml, "stage.classList.toggle('tiny', boardW <= 640)",
     "the .tiny toggle")
   must(broadcastHtml, "#stage.tiny", "the .tiny CSS block")
   must(broadcastHtml, ".plate-name { flex: 1 1 auto; min-width: 3.2em;",
