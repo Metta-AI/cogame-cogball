@@ -7,6 +7,7 @@
 
 import std/[json, monotimes, os]
 import lib/helpers
+import cogball/llm
 
 
 type
@@ -214,6 +215,48 @@ proc noCredentialsFallsBackInstantly() =
     doAssert sim.stats[seat].fallbackTurns == 40
   report "40 credential-free turns settle in " & $elapsed & " ms"
 
+proc rejectedCredentialsAreNotNoCredentials() =
+  ## A 401/403 disables the client for the rest of the episode (llm.nim), and
+  ## every later turn then takes the instant-fallback branch. The credentials
+  ## were PRESENT and were rejected, so the recorded cause must not be
+  ## `no_credentials` -- that would send phase 60 hunting for an unset secret
+  ## that was in fact set and wrong.
+  proc causesFor(client: LlmClient, batch: BatchFn): seq[string] =
+    var sim = playing(testConfig())
+    var engine = newTurnEngine(client, batch)
+    engine.llmSeats()
+    engine.turn(sim, 4, 0)
+    for seat in Seat:
+      doAssert sim.activeDirective[seat].source == dsFallback
+    for record in engine.records:
+      let node = parseJson(record)
+      if node{"k"}.getStr() == "fallback":
+        result.add(node{"cause"}.getStr())
+
+  let live = proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+      {.closure, gcsafe.} =
+    for call in calls:
+      result.add BatchReply(seat: call.seat, ok: true, text: GoodReply)
+
+  let rejected = causesFor(
+    LlmClient(transport: ltAnthropic, disabled: true), live)
+  doAssert rejected.len == 2, "expected one record per seat"
+  for cause in rejected:
+    doAssert cause == "transport_error",
+      "a rejected credential was recorded as `" & cause & "`"
+
+  let absent = causesFor(LlmClient(transport: ltNone, disabled: true), live)
+  doAssert absent.len == 2
+  for cause in absent:
+    doAssert cause == "no_credentials",
+      "an absent credential was recorded as `" & cause & "`"
+
+  let noTransport = causesFor(nil, nil)
+  doAssert noTransport.len == 2
+  for cause in noTransport:
+    doAssert cause == "no_credentials"
+  report "a rejected credential is a transport_error, not no_credentials"
+
 proc scriptedSeatsNeverCallOut() =
   var sim = playing(testConfig())
   var calls = 0
@@ -315,6 +358,7 @@ when isMainModule:
   transportErrorsAreLabelledByCause()
   budgetGuardFires()
   noCredentialsFallsBackInstantly()
+  rejectedCredentialsAreNotNoCredentials()
   scriptedSeatsNeverCallOut()
   mercyAndWallClock()
   seatsAlwaysScoreToOne()

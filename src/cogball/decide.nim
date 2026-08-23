@@ -315,12 +315,25 @@ proc turn*(
       # injects a fake transport); a nil BATCH is the real no-credentials path.
       resolved[seat] = engine.fallbackFor(sim, seat, turnIndex)
       settled[seat] = true
+      # `no_credentials` means there never were any. A client that HAD
+      # credentials and had them rejected mid-episode (401/403 disables it for
+      # the rest of the match) is a transport failure, not a missing secret --
+      # recording it as `no_credentials` would send phase 60 looking for an
+      # unset env var that was in fact set and wrong.
+      let rejected =
+        not engine.client.isNil and engine.client.transport != ltNone
       let cause =
         if engine.llmOff: "budget_guard"
+        elif rejected: "transport_error"
         else: "no_credentials"
+      let detail =
+        if rejected: "credentials rejected; the client is disabled for the "&
+          "rest of the episode"
+        else: ""
       engine.addRecord(%*{
         "k": "fallback", "turn": turnIndex, "seat": ord(seat),
-        "attempt": 1, "cause": cause, "detail": ""
+        "attempt": 1, "cause": cause,
+        "detail": clipRunes(detail, MaxDetailRunes)
       })
     else:
       calls.add BatchCall(
