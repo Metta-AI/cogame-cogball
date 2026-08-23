@@ -30,6 +30,7 @@ type
     lastTouchTick: int32
     lastGoalTick: int32
     lastDropTick: int32
+    lastKickoffTick: int32
     posts: int
     stalemate: int32
     turn: int
@@ -39,6 +40,7 @@ proc initBroadcastTracker*(): BroadcastTracker =
   result.lastTouchRobot = -1
   result.lastGoalTick = -1
   result.lastDropTick = -1
+  result.lastKickoffTick = -1
   result.turn = -1
 
 proc snapshot(tracker: var BroadcastTracker, sim: SimServer) =
@@ -54,6 +56,7 @@ proc snapshot(tracker: var BroadcastTracker, sim: SimServer) =
   tracker.lastTouchTick = sim.lastTouch.tick
   tracker.lastGoalTick = sim.lastGoalTick
   tracker.lastDropTick = sim.lastDropTick
+  tracker.lastKickoffTick = sim.lastKickoffTick
   tracker.stalemate = sim.stalemateTicks
   tracker.prevTick = sim.tickCount
   tracker.prevPhase = sim.phase
@@ -139,8 +142,11 @@ proc stepEvents*(
       tracker.turn >= 0:
     events.add(%*{"t": tick, "k": "turn_end", "turn": tracker.turn})
 
-  if sim.lastGoalTick >= 0 and sim.lastGoalTick != tracker.lastGoalTick and
-      sim.lastGoalTick == int32(tick):
+  # Every kickoff, not only the restart after a goal: the match-start kickoff
+  # is a kickoff too, and gating this on lastGoalTick meant the opening whistle
+  # produced no beat at all.
+  if sim.lastKickoffTick >= 0 and
+      sim.lastKickoffTick != tracker.lastKickoffTick:
     events.add(%*{"t": tick, "k": "kickoff",
       "restartForSeat": seatText(Seat(sim.restartSeat and 1))})
 

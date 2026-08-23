@@ -108,6 +108,10 @@ proc initSimServer*(config: GameConfig): SimServer =
         targetX: CentreX, targetY: CentreY,
         passTo: -1, kick: kickAuto, say: "")
   result.kickoffReset(int32(config.seed and 1))
+  # The construction-time placement is not a kickoff -- the match has not
+  # started -- so the beat field it just set is cleared again. `startGame`'s
+  # own kickoffReset is the first real one.
+  result.lastKickoffTick = -1
   result.freezeUntil = 0
 
 proc effectiveMaxTicks*(sim: SimServer): int {.inline.} =
@@ -176,6 +180,7 @@ proc kickoffReset*(sim: var SimServer, restartSeat: int32) =
         CentreX - 9_000_000'i32 * attackDir(seat),
         CentreY + dy + jitter)
   discard away
+  sim.lastKickoffTick = int32(sim.tickCount)
   sim.emitEvent(Kickoff, seat = int(restartSeat), x = CentreX, y = CentreY)
 
 proc neutralDrop(sim: var SimServer) =

@@ -146,6 +146,32 @@ proc dropBeatsMatchRealDrops() =
     "a ball that merely left the box emitted a phantom `drop` beat"
   report "the drop beat fires on a real drop and never on a counter reset"
 
+proc kickoffBeatsFireAtEveryRestart() =
+  ## `kickoff` was gated on `sim.lastGoalTick == tick`, so the MATCH-START
+  ## kickoff -- which sets no lastGoalTick -- produced no beat at all, and the
+  ## chrome's opening whistle was missing from the event list.
+  let config = testConfig()
+  var sim = seatedSim(config)
+  sim.gameEventLoggingEnabled = false
+  var tracker = initBroadcastTracker()
+  tracker.resync(sim)
+  # Through the lobby and into Playing: the match-start kickoff.
+  let atStart = sim.countBeats(tracker, "kickoff", 6)
+  doAssert sim.phase == Playing, "the match never started"
+  doAssert atStart == 1,
+    "the match-start kickoff emitted " & $atStart & " kickoff beats"
+
+  # ...and the restart after a goal emits exactly one more.
+  sim.freezeUntil = 0
+  sim.ball.x = PitchXMax - 200_000'i32
+  sim.ball.y = CentreY
+  sim.ball.vx = BallMaxSpeed
+  let afterGoal = sim.countBeats(tracker, "kickoff", 4)
+  doAssert sim.goals(Azure) == 1, "the goal did not land"
+  doAssert afterGoal == 1,
+    "the restart after a goal emitted " & $afterGoal & " kickoff beats"
+  report "a kickoff beat fires at the match start and at every restart"
+
 proc writeInputFrameMasksShim() = discard
 
 proc run() =
@@ -294,5 +320,6 @@ when isMainModule:
   echo "test_replay"
   writeInputFrameMasksShim()
   dropBeatsMatchRealDrops()
+  kickoffBeatsFireAtEveryRestart()
   run()
   echo "test_replay: all good"

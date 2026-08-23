@@ -407,6 +407,10 @@ type
       ## SimServer is serialized POSITIONALLY into replay keyframes. Set inside
       ## the hashed step so the viewer re-derives it identically, and not
       ## hashed, exactly like the lastGoal* fields above.
+    lastKickoffTick*: int32
+      ## The tick the last kickoff placement happened on -- the match start as
+      ## well as every restart after a goal. Same discipline as lastDropTick:
+      ## appended, set inside the step, never hashed.
 
   TrailPoint* = object
     x*, y*: int32
