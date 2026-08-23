@@ -1,0 +1,31 @@
+[
+  {
+    "name": "cogball-total",
+    "run": "/bin/cogball-player",
+    "env": {
+      "PLAYER_PROMPT": "Play total football: never leave your own goal empty and never leave the ball\nunpressured. Every turn, assign exactly one robot as keeper with role \"keeper\" and\nintent \"hold\" at a target on the arc 3 metres in front of your own goal, y matched to\nabout a third of the ball's y so it covers the near post. Send the robot closest to\nthe ball with intent \"chase\" or \"shoot\" - \"shoot\" whenever it is within 6 metres of\nthe ball and the ball is in their half. The third robot plays support: intent\n\"intercept\" with a target roughly 8 metres up-field of the ball on the opposite\ny-side, so it is already there when the ball squirts loose. Rotate the roles when the\ndistances say so - the nearest robot always attacks, the deepest always keeps. Prefer\n\"pass\" to your support robot over a low-percentage shot from outside 12 metres. If you\nare two goals up, drop the support robot to \"back\" and hold the middle."
+    }
+  },
+  {
+    "name": "cogball-counter",
+    "run": "/bin/cogball-player",
+    "env": {
+      "PLAYER_PROMPT": "Play the counter: sit deep, win the ball, then hit them fast in the space they left.\nDefault shape is two robots behind the ball line - one \"keeper\" holding the goal arc,\none \"back\" holding a target halfway between the ball and your own goal, both with\nintent \"hold\" so they stay compact and do not chase. The third robot presses: intent\n\"press\" on whichever opponent is nearest the ball. The moment your team is the last\ntoucher of the ball, switch: the presser takes intent \"shoot\", the back becomes a\n\"wing\" with intent \"intercept\" targeting 10 metres up-field on the far side, and only\nthe keeper stays home. Use \"pass\" to the wing whenever an opponent is within 3 metres\nof your ball carrier. Use \"clear\" with kick \"auto\" any time the ball is inside your own\npenalty area with an opponent closer to it than you are. Never send all three robots\npast the halfway line."
+    },
+    "player": "ply_bac48eb1-662e-44f8-973d-f3e016dccf5d"
+  },
+  {
+    "name": "cogball-formation",
+    "run": "/bin/cogball-player",
+    "env": {
+      "PLAYER_SCRIPTED": "formation"
+    }
+  },
+  {
+    "name": "cogball-swarm",
+    "run": "/bin/cogball-player",
+    "env": {
+      "PLAYER_SCRIPTED": "swarm"
+    }
+  }
+]

@@ -1,0 +1,173 @@
+# CI for the cogball Coworld repo (Metta-AI/cogame-cogball).
+#
+# Scaffolded from the coworld-builder templates (slug cogball, image
+# coworld-cogball, 2 seats). The `test` job is cogball's own (emscripten +
+# raylib cache + uv + pytest) because this repo's toolchain is C/wasm +
+# Python, not Nim; `docker-smoke` and `wasm-viewer` keep the template shape.
+#
+# The coworld-builder sandbox has no docker, no emsdk and no node toolchain
+# for wasm: this workflow is the ONLY place they run. Phase 20's exit
+# criterion is this workflow green on main.
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SLUG: cogball
+  IMAGE: coworld-cogball
+  # Pin mirrors the Dockerfile wasm-builder stage; bump both together.
+  EMSDK_VERSION: "6.0.5"
+
+jobs:
+  # ---------------------------------------------------------------------
+  # The wasm artefacts and the Python suite. tests/test_determinism.py is
+  # THE gate for this repo, and it needs BOTH builds of the physics core:
+  # the standalone module under wasmtime and the emscripten module under
+  # node. COGBALL_REQUIRE_WASM_BUILD turns the local-convenience "not
+  # built" skips into failures -- in CI the artefacts were just built, so a
+  # skip here would mean the gate silently stopped gating.
+  # ---------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - uses: mymindstorm/setup-emsdk@6ab9eb1bda2574c4ddb79809fc9247783eaf9021 # v14
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+          actions-cache-folder: emsdk-cache
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # sim/build_viewer.sh caches the sha-pinned raylib web zip here; key on
+      # the pin so a bump invalidates the cache.
+      - name: Cache raylib web build
+        uses: actions/cache@v4
+        with:
+          path: build/raylib-web
+          key: raylib-web-${{ hashFiles('sim/build_viewer.sh') }}
+
+      - name: Build the wasm artefacts
+        run: |
+          set -euo pipefail
+          bash sim/build_sim.sh
+          bash sim/build_viewer.sh
+
+      - name: Sync Python deps
+        run: uv sync --frozen
+
+      - name: Run tests
+        env:
+          COGBALL_REQUIRE_WASM_BUILD: "1"
+        run: uv run pytest -v
+
+  # ---------------------------------------------------------------------
+  # Packaging smoke: the production image builds, and one real episode runs
+  # end to end in raw docker with the certification fixture's seat mix.
+  # The image is built in THIS job, so the smoke can never run a stale
+  # binary against freshly edited game logic.
+  # ---------------------------------------------------------------------
+  docker-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+
+      # Invoked by path, not through `bash`: a `bash SCRIPT` call ignores the
+      # exec bit, so a 0644 helper would go green here and only fail wherever
+      # it is executed directly.
+      - name: Assert the smoke script is present and executable
+        run: |
+          set -euo pipefail
+          test -f tools/ci/docker_smoke.sh || {
+            echo "::error::tools/ci/docker_smoke.sh is missing"; exit 1; }
+          test -x tools/ci/docker_smoke.sh || {
+            echo "::error::tools/ci/docker_smoke.sh must be committed executable (mode 100755)."
+            echo "::error::Fix with: git update-index --chmod=+x tools/ci/docker_smoke.sh"
+            exit 1; }
+
+      - name: Build image
+        run: docker build --platform=linux/amd64 -t "${IMAGE}:ci" .
+
+      - name: Raw-Docker episode smoke
+        # SMOKE_SLUG is passed explicitly so the workflow's SLUG is the single
+        # source for the game/player entrypoint names; the script's own
+        # scaffold-substituted default is only a fallback.
+        env:
+          SMOKE_SLUG: ${{ env.SLUG }}
+        run: ./tools/ci/docker_smoke.sh "${IMAGE}:ci"
+
+  # ---------------------------------------------------------------------
+  # The static replay viewer. The platform serves THIS bundle from
+  # /v2/coworlds/replays/static/<cow_id>/<sha>/index.html, so a bundle that
+  # does not build (or is missing its wasm) means every hosted replay hangs.
+  # ---------------------------------------------------------------------
+  wasm-viewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+
+      # `coworld build` (bundle.py) refuses to package a source replay-viewer
+      # bundle unless the hook is BOTH a file and os.X_OK:
+      #   "Coworld builds with a source replay viewer bundle require an
+      #    executable build hook".
+      # Running it as `bash tools/build_replay_viewer.sh` would ignore the
+      # exec bit entirely, so a mode-0644 hook passed CI and only blew up
+      # later, in coworld-release.yml's "Build the Coworld manifest". Assert
+      # the bit, then invoke by path so CI exercises exactly what
+      # `coworld build` requires.
+      - name: Assert the replay-viewer build hook is present and executable
+        run: |
+          set -euo pipefail
+          test -f tools/build_replay_viewer.sh || {
+            echo "::error::tools/build_replay_viewer.sh is missing; coworld build needs it"
+            echo "::error::to emit the static replay bundle"
+            exit 1; }
+          test -x tools/build_replay_viewer.sh || {
+            echo "::error::tools/build_replay_viewer.sh must be committed executable (mode 100755):"
+            echo "::error::coworld build hard-requires os.X_OK on the build hook."
+            echo "::error::Fix with: git update-index --chmod=+x tools/build_replay_viewer.sh"
+            exit 1; }
+
+      - name: Build the static replay viewer bundle
+        run: ./tools/build_replay_viewer.sh "$PWD/dist/static-replay-viewer"
+
+      - name: Assert the bundle is complete
+        run: |
+          set -euo pipefail
+          out="$PWD/dist/static-replay-viewer"
+          test -s "${out}/index.html" || {
+            echo "::error::${out}/index.html missing or empty"; exit 1; }
+          for asset in static_replay.js sim_sha.js cogball_viewer.js; do
+            test -s "${out}/${asset}" || {
+              echo "::error::${out}/${asset} missing or empty"; exit 1; }
+          done
+          wasm_count="$(find "${out}" -name '*.wasm' -size +1c | wc -l | tr -d ' ')"
+          if [ "${wasm_count}" -lt 1 ]; then
+            echo "::error::no non-empty .wasm module in ${out}"
+            find "${out}" -type f | sed 's/^/  /'
+            exit 1
+          fi
+          echo "bundle OK:"
+          find "${out}" -type f -printf '  %p (%s bytes)\n'
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-replay-viewer
+          path: dist/static-replay-viewer
+          if-no-files-found: error
+          retention-days: 14
