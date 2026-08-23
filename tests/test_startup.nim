@@ -142,6 +142,30 @@ proc thePlayerReceiveIsBounded() =
   report "the player's only blocking read has an explicit " &
     $(ReceiveTimeoutMs div 1000) & "s bound"
 
+proc thePlayerSurvivesTheStartRace() =
+  ## The game pod and the player pods are started together, so the game's
+  ## listener may not be up when a player first dials. A single unguarded
+  ## `newWebSocket` dies there with an unhandled OSError and a traceback: the
+  ## seat never joins, and the episode is charged a lobby no-show for a game
+  ## that was 200 ms behind. The connect retries, bounded, and then exits with
+  ## a clean message.
+  let source = readFile("src/cogball_player.nim")
+  doAssert not source.contains("let socket = newWebSocket(url)"),
+    "the player dials once and dies on a refused connect again"
+  doAssert source.contains("let socket = connectWithRetry(url)"),
+    "the player no longer retries its connect"
+  doAssert source.contains("quit(\"cogball player: could not reach the game"),
+    "giving up on the connect must be a clean message, not a traceback"
+  # Bounded, and inside the lobby's own patience: a seat that gives up here is
+  # one the lobby was about to declare missing anyway.
+  doAssert ConnectTimeoutMs > 0
+  doAssert ConnectTimeoutMs < DefaultLobbyJoinTimeoutTicks * 1000 div TargetFps,
+    "the connect retry (" & $ConnectTimeoutMs &
+      " ms) outlasts lobbyJoinTimeoutTicks"
+  doAssert ConnectRetryMs > 0 and ConnectRetryMs <= 1000
+  report "the player retries a refused connect for " &
+    $(ConnectTimeoutMs div 1000) & "s and then exits cleanly"
+
 when isMainModule:
   echo "test_startup"
   badConfigIsRejectedCleanly()
@@ -150,4 +174,5 @@ when isMainModule:
   theRuntimeContractIsRead()
   missingConfigUriIsSurvivable()
   thePlayerReceiveIsBounded()
+  thePlayerSurvivesTheStartRace()
   echo "test_startup: all good"

@@ -15,12 +15,21 @@
 ##     --run /bin/cogball-player --secret-env PLAYER_PROMPT="<your strategy>"
 
 import
-  std/[json, net, options, os, strutils],
+  std/[json, monotimes, net, options, os, strutils, times],
   whisky
 
 const
   SpriteClientChat = 0x81'u8
   SpriteClientReady = 0x85'u8
+  ConnectTimeoutMs* = 90_000
+    ## The game pod and the player pods are started together, so the game's
+    ## listener may not be up when this process first dials: a refused connect
+    ## at t=0 is NORMAL, not fatal. Retry until the listener appears, bounded,
+    ## and then exit with a clean message rather than a traceback. Comfortably
+    ## longer than the game's board bake plus its container start, and well
+    ## inside lobbyJoinTimeoutTicks (2400 ticks = 100 s), so a seat that gives
+    ## up here is a seat the lobby was about to declare missing anyway.
+  ConnectRetryMs* = 250
   ReceiveTimeoutMs* = 120_000
     ## An explicit bound on the only blocking wait this process has. The game
     ## sends one frame per loop iteration at 24 Hz, and the longest legitimate
@@ -44,6 +53,26 @@ proc chatPacket(text: string): string =
 proc readyPacket(): string =
   result = newString(1)
   result[0] = char(SpriteClientReady)
+
+proc connectWithRetry(url: string): WebSocket =
+  ## Dials until the game is listening, or until ConnectTimeoutMs. Without
+  ## this, a player container that wins the start race dies on an unhandled
+  ## OSError, its seat never joins, and the episode is charged a lobby no-show
+  ## for a game that was merely 200 ms behind.
+  let deadline = getMonoTime() + initDuration(milliseconds = ConnectTimeoutMs)
+  var waited = false
+  while true:
+    try:
+      return newWebSocket(url)
+    except CatchableError as failure:
+      if getMonoTime() >= deadline:
+        quit("cogball player: could not reach the game within " &
+          $(ConnectTimeoutMs div 1000) & "s: " & failure.msg, 1)
+      if not waited:
+        waited = true
+        echo "cogball player: game not listening yet; retrying for up to ",
+          ConnectTimeoutMs div 1000, "s"
+      sleep(ConnectRetryMs)
 
 when isMainModule:
   let url = getEnv("COWORLD_PLAYER_WS_URL")
@@ -71,7 +100,7 @@ when isMainModule:
   echo "cogball player: connecting (",
     (if prompt.len > 0: "prompt, " & $prompt.len & " chars"
      else: "scripted " & scripted), ")"
-  let socket = newWebSocket(url)
+  let socket = connectWithRetry(url)
   socket.send(chatPacket(registration), BinaryMessage)
 
   var reRegistered = false
