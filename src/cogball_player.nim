@@ -15,12 +15,20 @@
 ##     --run /bin/cogball-player --secret-env PLAYER_PROMPT="<your strategy>"
 
 import
-  std/[json, options, os, strutils],
+  std/[json, net, options, os, strutils],
   whisky
 
 const
   SpriteClientChat = 0x81'u8
   SpriteClientReady = 0x85'u8
+  ReceiveTimeoutMs* = 120_000
+    ## An explicit bound on the only blocking wait this process has. The game
+    ## sends one frame per loop iteration at 24 Hz, and the longest legitimate
+    ## gap is one coaching turn (turnBudgetMs, 9 s) plus scheduling, so two
+    ## minutes of silence means the game pod is gone -- normally it closes the
+    ## socket and the read returns, but a pod that dies without closing would
+    ## otherwise leave this container blocked until the platform kills the
+    ## episode. Degrade, never hang.
 
 proc chatPacket(text: string): string =
   ## A Sprite v1 chat packet: type byte, u16 length, then the raw payload. The
@@ -72,7 +80,11 @@ when isMainModule:
     # raises on a half-closed read, so the loop owns that and exits 0.
     var received: Option[Message]
     try:
-      received = socket.receiveMessage()
+      received = socket.receiveMessage(ReceiveTimeoutMs)
+    except TimeoutError:
+      echo "cogball player: no frame for ", ReceiveTimeoutMs div 1000,
+        "s; the game is gone, exiting"
+      break
     except CatchableError:
       echo "cogball player: connection closed, exiting"
       break

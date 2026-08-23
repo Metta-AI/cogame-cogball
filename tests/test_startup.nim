@@ -5,6 +5,7 @@
 import std/[os, strutils]
 import lib/helpers
 import cogball/sim_config
+import cogball_player
 
 proc badConfigIsRejectedCleanly() =
   ## `config.update` raises a CogballError with a readable message; the
@@ -121,6 +122,26 @@ proc missingConfigUriIsSurvivable() =
   doAssert config.maxTicks == DefaultMaxTicks
   report "an absent config falls back to the defaults, cleanly"
 
+proc thePlayerReceiveIsBounded() =
+  ## The player container's receive is the only blocking wait in that process.
+  ## The socket closing is the NORMAL end of an episode, but a game pod that
+  ## dies without closing would otherwise leave the seat blocked until the
+  ## platform's episode kill, with no bound of its own.
+  let source = readFile("src/cogball_player.nim")
+  doAssert not source.contains("socket.receiveMessage()"),
+    "the player's receive lost its deadline and is unbounded again"
+  doAssert source.contains("socket.receiveMessage(ReceiveTimeoutMs)"),
+    "the player's receive no longer passes a deadline"
+  doAssert source.contains("except TimeoutError:"),
+    "the player does not handle its own receive deadline"
+  # Long enough that it can never fire on a healthy episode: the longest
+  # legitimate gap between frames is one coaching turn.
+  doAssert ReceiveTimeoutMs > 5 * DefaultTurnBudgetMs,
+    "the receive deadline (" & $ReceiveTimeoutMs &
+      " ms) is too close to one turn budget (" & $DefaultTurnBudgetMs & " ms)"
+  report "the player's only blocking read has an explicit " &
+    $(ReceiveTimeoutMs div 1000) & "s bound"
+
 when isMainModule:
   echo "test_startup"
   badConfigIsRejectedCleanly()
@@ -128,4 +149,5 @@ when isMainModule:
   bothEntrypointsAreDeclared()
   theRuntimeContractIsRead()
   missingConfigUriIsSurvivable()
+  thePlayerReceiveIsBounded()
   echo "test_startup: all good"
