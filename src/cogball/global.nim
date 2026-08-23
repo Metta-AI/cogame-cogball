@@ -556,7 +556,7 @@ proc addBallAndRobots(
       let i = firstRobotOf(Seat(selfSeat and 1)) + slot
       packet.addObject(SelfMarkerObjectBase + slot,
         worldToBoard(sim.robots[i].x) - markerPx div 2,
-        worldToBoard(sim.robots[i].y) - RigCanvas * BoardScale div 2 - markerPx,
+        worldToBoard(sim.robots[i].y) - (CogHeadTop + 2) * BoardScale - markerPx,
         300, MapLayerId, SelfMarkerSpriteId)
 
 proc addTrail(

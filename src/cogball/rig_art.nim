@@ -1,36 +1,37 @@
-## Broadcast-side art: the wheeled-rig compositor and the ball/turf bakes.
+## Broadcast-side art: the cog sprite compositor and the ball/turf bakes.
 ##
 ## Everything here is BROADCAST-ONLY: no sim state, nothing in gameHash, no
-## GameVersion bump for changes. The robots are the shipped real art —
-## `data/rig_real/blue` (Azure) and `data/rig_real/red` (Crimson) — the same
-## nine-segment CvC rig coworld-ctf draws, composed here into ONE sprite per
-## (livery, heading step) because a cogball robot has no turret to swivel: its
-## body and its heading are the same thing.
+## GameVersion bump for changes. The robots are nano-banana (Gemini) renders
+## of the canonical Softmax cog in two football kits — `data/art/cog_azure.png`
+## (blue #7 jersey, headband, keeper gloves) and `data/art/cog_crimson.png`
+## (red #9 jersey, crested helmet with a white plume, shin guards) — produced
+## by `scripts/art/split_cog_sheet.py` from `scripts/art/source/cogs_sheet.png`.
+## The sprite is drawn UPRIGHT with its feet on the robot's position, so the
+## kit always reads; the heading is a tick on a team-coloured ground ellipse
+## under the wheels, baked once per (livery, heading step).
 
 import
   std/[math, os, tables],
   pixie,
   sim_types
 
-type
-  RigSeg = enum
-    rsLegFL, rsLegFR, rsLegRear, rsWheelL, rsWheelR, rsWheelRear,
-    rsArmL, rsArmR, rsHead
-
 const
   RigSteps* = 16              ## baked heading steps (16 brads apart).
-  RigCanvas* = 64             ## px square robot sprite canvas at 1x.
-  RobotBodyPx* = 30           ## drawn body size on the map at 1x; the collision
-                              ## circle is 1.1 m = 27.5 map px, so the art reads
-                              ## a touch larger than the hull, as it should.
+  RigCanvas* = 88             ## px square robot sprite canvas at 1x.
+  RobotBodyPx* = 30           ## hull footprint on the map at 1x: the collision
+                              ## circle is 1.1 m = 27.5 map px, and the ground
+                              ## ellipse under the cog is sized against it.
+  CogSpritePx* = 48           ## the upright cog sprite's height at 1x.
+  CogFeetDrop = 8             ## sprite bottom edge sits this far below the
+                              ## robot's position (the feet straddle the ring).
+  CogRingDrop = 4             ## the ground ellipse's centre, below the position.
+  CogHeadTop* = CogSpritePx - CogFeetDrop
+                              ## how far above the position the sprite reaches.
   BallSpritePx* = 20          ## 0.7 m diameter = 17.5 map px, plus the rim.
-  MasterFrame = 192.0
-  MasterBody = 99.0           ## the solid body span in the 192 px master frame.
-  RigHub: tuple[x, y: float] = (96.0, 88.0)
 
 var
-  rigImages: array[Seat, array[RigSeg, Image]]
-  rigLoaded: array[Seat, bool]
+  cogImages: array[Seat, Image]
+  cogLoaded: array[Seat, bool]
   rigCache = initTable[int, seq[uint8]]()
   ballCache = initTable[int, seq[uint8]]()
   discCache = initTable[(int, uint8, uint8, uint8, uint8), seq[uint8]]()
@@ -43,30 +44,14 @@ proc gameDir*(): string =
   ## preloads it as `data`).
   getCurrentDir()
 
-proc segPath(seg: RigSeg): string =
-  case seg
-  of rsHead: "head"
-  of rsArmL: "arm_l"
-  of rsArmR: "arm_r"
-  of rsLegFL: "leg_fl"
-  of rsLegFR: "leg_fr"
-  of rsLegRear: "leg_rear"
-  of rsWheelL: "wheel_l"
-  of rsWheelR: "wheel_r"
-  of rsWheelRear: "wheel_rear"
+proc liveryFile(seat: Seat): string =
+  if seat == Azure: "cog_azure.png" else: "cog_crimson.png"
 
-proc liveryDir(seat: Seat): string =
-  ## Azure rides the shipped BLUE rig, Crimson the RED one. That is why the
-  ## design renamed the alias from "Magenta": no recolouring, no placeholder.
-  if seat == Azure: "blue" else: "red"
-
-proc ensureRigLoaded(seat: Seat) =
-  if rigLoaded[seat]:
+proc ensureCogLoaded(seat: Seat) =
+  if cogLoaded[seat]:
     return
-  let dir = gameDir() / "data" / "rig_real" / liveryDir(seat)
-  for seg in RigSeg:
-    rigImages[seat][seg] = readImage(dir / segPath(seg) & ".png")
-  rigLoaded[seat] = true
+  cogImages[seat] = readImage(gameDir() / "data" / "art" / liveryFile(seat))
+  cogLoaded[seat] = true
 
 proc canvasToPixels(canvas: Image): seq[uint8] =
   ## Straight-alpha RGBA for the Sprite v1 protocol (pixie stores premultiplied).
@@ -78,40 +63,55 @@ proc canvasToPixels(canvas: Image): seq[uint8] =
     result[i * 4 + 2] = c.b
     result[i * 4 + 3] = c.a
 
+proc seatColour*(seat: Seat): ColorRGBA {.inline.} =
+  if seat == Azure: AzureColor else: CrimsonColor
+
 proc rigPixels*(seat: Seat, step: int, renderScale = 1): seq[uint8] =
-  ## The whole robot at one heading step, hub-centred in a RigCanvas sprite.
-  ## Cached for the life of the process: 2 liveries x 16 steps.
+  ## The whole robot at one heading step, position-centred in a RigCanvas
+  ## sprite: shadow, team ground ellipse with a heading tick, then the upright
+  ## cog with its feet on the ring. Cached for the life of the process:
+  ## 2 liveries x 16 steps.
   let
     b = ((step mod RigSteps) + RigSteps) mod RigSteps
     key = (ord(seat) * RigSteps + b) * 8 + renderScale
   if rigCache.hasKey(key):
     return rigCache[key]
-  ensureRigLoaded(seat)
+  ensureCogLoaded(seat)
   let
+    k = float32(renderScale)
     outCanvas = RigCanvas * renderScale
-    s = float(RobotBodyPx) / MasterBody * float(renderScale)
     centre = float32(outCanvas) / 2
-    # The masters face SOUTH, so the -90 degrees turn makes the face lead the
-    # heading. Angle increases counter-clockwise; screen y is down, so negate.
-    angle = float(b) * 2.0 * PI / float(RigSteps)
-    mat = translate(vec2(centre, centre)) *
-      rotate(float32(-angle - PI / 2.0)) *
-      scale(vec2(float32(s), float32(s))) *
-      translate(vec2(float32(-RigHub.x), float32(-RigHub.y)))
+    ringY = centre + float32(CogRingDrop) * k
+    ringRx = float32(RobotBodyPx) * k * 0.5
+    ringRy = ringRx * 0.48
+    # Angle increases counter-clockwise; screen y is down, so negate.
+    angle = float32(b) * 2.0'f32 * float32(PI) / float32(RigSteps)
   var canvas = newImage(outCanvas, outCanvas)
-  # A soft drop shadow first, then the segments back-to-front: legs and wheels,
-  # then the shoulders, then the head cube on top so no hub hole shows.
   let shadow = newImage(outCanvas, outCanvas)
   let shadowCtx = newContext(shadow)
   shadowCtx.fillStyle = rgba(0, 0, 0, 70)
-  shadowCtx.fillEllipse(
-    vec2(centre, centre + float32(RobotBodyPx) * float32(renderScale) * 0.22),
-    float32(RobotBodyPx) * float32(renderScale) * 0.48,
-    float32(RobotBodyPx) * float32(renderScale) * 0.30)
-  shadow.blur(2.0 * float32(renderScale))
+  shadowCtx.fillEllipse(vec2(centre, ringY), ringRx * 1.1, ringRy * 1.1)
+  shadow.blur(2.0 * k)
   canvas.draw(shadow)
-  for seg in RigSeg:
-    canvas.draw(rigImages[seat][seg], mat)
+  let ctx = newContext(canvas)
+  ctx.strokeStyle = seatColour(seat)
+  ctx.lineWidth = 2.5 * k
+  ctx.strokeEllipse(vec2(centre, ringY), ringRx, ringRy)
+  # the heading tick: from the ring centre out along the heading, projected
+  # onto the ground ellipse so it reads as lying on the turf
+  ctx.strokeStyle = rgba(242, 232, 216, 200)
+  ctx.lineWidth = 2.0 * k
+  ctx.strokeSegment(segment(
+    vec2(centre, ringY),
+    vec2(centre + cos(angle) * ringRx * 1.4, ringY - sin(angle) * ringRy * 1.4)))
+  let
+    img = cogImages[seat]
+    s = float32(CogSpritePx) * k / float32(img.height)
+    w = float32(img.width) * s
+    bottom = centre + float32(CogFeetDrop) * k
+    mat = translate(vec2(centre - w / 2, bottom - float32(CogSpritePx) * k)) *
+      scale(vec2(s, s))
+  canvas.draw(img, mat)
   result = canvasToPixels(canvas)
   rigCache[key] = result
 
@@ -177,6 +177,3 @@ proc hueColour*(hue: int, alpha: uint8): ColorRGBA =
   ## The per-robot paint hue (RobotHues), as an RGBA at a given alpha.
   let c = ColorHSL(h: float32(hue), s: 62.0, l: 46.0).asRgb()
   rgba(c.r, c.g, c.b, alpha)
-
-proc seatColour*(seat: Seat): ColorRGBA {.inline.} =
-  if seat == Azure: AzureColor else: CrimsonColor

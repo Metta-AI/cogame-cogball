@@ -97,6 +97,11 @@ for exactly this reason. If you find yourself wanting `intent` inside
   the wall-clock stop.
 * `src/cogball/replays.nim` — ctf's codec with two named edits: masks are
   indexed by ROBOT (six), and a leave does not shift the mask arrays.
+* `data/art/cog_azure.png`, `data/art/cog_crimson.png` — the robot sprites,
+  nano-banana (Gemini) renders of the Softmax cog keyed and split from
+  `scripts/art/source/cogs_sheet.png` by `scripts/art/split_cog_sheet.py`
+  (`python3 scripts/art/split_cog_sheet.py data/art`). Regenerate, never hand
+  edit; the viewer preloads all of `data/`, so there is no second art copy.
 * `tests/` — run from the repo ROOT (`nim r --path:src tests/<file>.nim`);
   assets resolve via `data/`. Use `-d:release` for anything heavy.
 * Dependencies come from nimby (`nimby --global sync nimby.lock`); the
