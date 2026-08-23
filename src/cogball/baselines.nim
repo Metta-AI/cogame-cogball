@@ -1,0 +1,185 @@
+## The two scripted baselines. Both emit the SAME directive object on the same
+## 5 s cadence as an LLM coach, so their output is legal by construction and
+## directly comparable — which is what makes the bounded-orders test in
+## tests/test_baselines.nim meaningful.
+##
+## `formation` is the certification player, the fallback directive when the LLM
+## fails twice, and the default for a seat that registers neither field.
+## `swarm` is the second filler: deliberately weaker and different in shape.
+
+import
+  std/strutils,
+  sim, directives
+
+## The tuning constants are `{.intdefine.}` so a grid harness can sweep them
+## from the command line (`-d:CogballKeeperArc=2500000`) without editing the
+## source; the values here are the ones that came out of that sweep.
+const
+  KeeperArc* {.intdefine: "CogballKeeperArc".} = 2_000_000
+    ## micrometres in front of the own goal line. Swept: 2 m beats 3 m and 4 m
+    ## against `swarm` over 48 matches (both sides played), because a keeper
+    ## further out is a keeper the second attacker walks around.
+  KeeperYSpan* {.intdefine: "CogballKeeperYSpan".} = 2_600_000
+  StrikerRange* {.intdefine: "CogballStrikerRange".} = 9_000_000
+    ## how close the ball has to be, in its OWN half, before the nearest robot
+    ## strikes instead of merely chasing. Swept: 9 m beats 6 m — hesitating at
+    ## 6 m hands the loose ball to whoever is already running.
+  BackPull* {.intdefine: "CogballBackPull".} = 1_500_000
+  WingLead* {.intdefine: "CogballWingLead".} = 7_000_000
+  WingWide* {.intdefine: "CogballWingWide".} = 5_000_000
+  SupportAlwaysRuns* {.intdefine: "CogballSupportAlwaysRuns".} = 0
+    ## 1 = the third robot runs the channel even while the ball is in its own
+    ## half, instead of shielding the middle.
+
+proc ballInOwnHalf*(sim: SimServer, seat: Seat): bool {.inline.} =
+  if attackDir(seat) > 0: sim.ball.x < CentreX else: sim.ball.x > CentreX
+
+proc deepestRobot(sim: SimServer, seat: Seat): int =
+  ## The robot nearest its own goal; ties by ascending robot index.
+  let own = ownGoalX(seat)
+  var
+    best = firstRobotOf(seat)
+    bestD = high(int64)
+  for slot in 0 ..< RobotsPerSeat:
+    let
+      i = firstRobotOf(seat) + slot
+      d = abs(int64(sim.robots[i].x) - int64(own))
+    if d < bestD:
+      bestD = d
+      best = i
+  best
+
+proc closestToBall(sim: SimServer, seat: Seat, skip: int): int =
+  var
+    best = -1
+    bestD = high(int64)
+  for slot in 0 ..< RobotsPerSeat:
+    let i = firstRobotOf(seat) + slot
+    if i == skip:
+      continue
+    let
+      dx = int64(sim.ball.x) - int64(sim.robots[i].x)
+      dy = int64(sim.ball.y) - int64(sim.robots[i].y)
+      d = dx * dx + dy * dy
+    if d < bestD:
+      bestD = d
+      best = i
+  best
+
+proc keeperTarget(sim: SimServer, seat: Seat): tuple[x, y: int32] =
+  let
+    x = ownGoalX(seat) + int32(KeeperArc) * attackDir(seat)
+    y = CentreY + clamp((sim.ball.y - CentreY) div 3,
+      -int32(KeeperYSpan), int32(KeeperYSpan))
+  (x, y)
+
+proc formationDirective*(sim: SimServer, seat: Seat, turn: int): Directive =
+  ## The reference shape: one keeper on the arc, the nearest robot on the ball,
+  ## the third either shielding the middle or running the channel.
+  result = emptyDirective(seat)
+  result.turn = int32(turn)
+  result.source = dsScripted
+  result.note = "keeper home, nearest on the ball, third in the channel"
+  let
+    base = firstRobotOf(seat)
+    keeper = sim.deepestRobot(seat)
+    striker = sim.closestToBall(seat, keeper)
+  var third = -1
+  for slot in 0 ..< RobotsPerSeat:
+    let i = base + slot
+    if i != keeper and i != striker:
+      third = i
+  for slot in 0 ..< RobotsPerSeat:
+    let i = base + slot
+    var order = RobotOrder(kick: kickAuto, passTo: -1)
+    if i == keeper:
+      let target = sim.keeperTarget(seat)
+      order.role = roleKeeper
+      order.intent = inHold
+      order.targetX = target.x
+      order.targetY = target.y
+      order.say = "holding the arc"
+    elif i == striker:
+      order.role = roleStriker
+      order.targetX = sim.ball.x
+      order.targetY = sim.ball.y
+      let
+        dist = distI(sim.ball.x - sim.robots[i].x, sim.ball.y - sim.robots[i].y)
+        inOpponentHalf = not sim.ballInOwnHalf(seat)
+      if inOwnPenaltyArea(seat, sim.ball.x, sim.ball.y):
+        order.intent = inClear
+        order.say = "get it clear"
+      elif inOpponentHalf or dist <= int32(StrikerRange):
+        order.intent = inShoot
+        order.say = "having a go"
+      else:
+        order.intent = inChase
+        order.say = "closing in"
+    else:
+      order.role = roleBack
+      if sim.ballInOwnHalf(seat) and SupportAlwaysRuns == 0:
+        let
+          own = ownGoalX(seat)
+          midX = int32((int64(sim.ball.x) + int64(own)) div 2)
+          side = if sim.ball.y >= CentreY: -int32(BackPull)
+                 else: int32(BackPull)
+        order.intent = inHold
+        order.targetX = midX
+        order.targetY = clamp(sim.ball.y + side, 1_000_000'i32,
+          WorldH - 1_000_000'i32)
+        order.say = "screening the middle"
+      else:
+        order.role = roleWing
+        order.intent = inIntercept
+        let side = if sim.ball.y >= CentreY: -int32(WingWide)
+                   else: int32(WingWide)
+        order.targetX = clamp(sim.ball.x + int32(WingLead) * attackDir(seat),
+          PitchXMin + 1_000_000'i32, PitchXMax - 1_000_000'i32)
+        order.targetY = clamp(CentreY + side, 1_000_000'i32,
+          WorldH - 1_000_000'i32)
+        order.say = "running the channel"
+    result.robots[slot] = order
+  discard third
+
+proc swarmDirective*(sim: SimServer, seat: Seat, turn: int): Directive =
+  ## Everyone chases. The deepest robot minds the goal only while the ball is
+  ## in its own half. Loses to `formation`, which is the point: the ladder
+  ## needs a spread.
+  result = emptyDirective(seat)
+  result.turn = int32(turn)
+  result.source = dsScripted
+  result.note = "everyone on the ball"
+  let
+    base = firstRobotOf(seat)
+    keeper = sim.deepestRobot(seat)
+    guard = sim.ballInOwnHalf(seat)
+  for slot in 0 ..< RobotsPerSeat:
+    let i = base + slot
+    var order = RobotOrder(kick: kickAuto, passTo: -1)
+    if i == keeper and guard:
+      let target = sim.keeperTarget(seat)
+      order.role = roleBack
+      order.intent = inHold
+      order.targetX = target.x
+      order.targetY = target.y
+      order.say = "minding the goal"
+    else:
+      order.role = roleStriker
+      order.intent = inChase
+      order.targetX = sim.ball.x
+      order.targetY = sim.ball.y
+      order.say = "on it"
+    result.robots[slot] = order
+
+proc baselineDirective*(
+  sim: SimServer,
+  seat: Seat,
+  name: string,
+  turn: int
+): Directive =
+  ## Dispatch by baseline name. An unknown name is `formation` — a seat that
+  ## sets neither PLAYER_PROMPT nor PLAYER_SCRIPTED plays it too.
+  if name.strip().toLowerAscii() == "swarm":
+    sim.swarmDirective(seat, turn)
+  else:
+    sim.formationDirective(seat, turn)
