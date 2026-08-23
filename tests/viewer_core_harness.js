@@ -119,7 +119,12 @@ function run(M) {
     const stepped = call("viewer_step", "number", ["number"], [30]);
     if (stepped === 0) break;
     const t = call("viewer_tick", "number");
-    if (t % 30 === 0) digests.push([t, call("viewer_state_digest", "number") >>> 0]);
+    // t === total is the end state, not a keyframe: the recording stops
+    // writing keyframes at the last tick it played. It is reported
+    // separately as endDigest.
+    if (t % 30 === 0 && t < total) {
+      digests.push([t, call("viewer_state_digest", "number") >>> 0]);
+    }
   }
   const endDigest = call("viewer_state_digest", "number") >>> 0;
 

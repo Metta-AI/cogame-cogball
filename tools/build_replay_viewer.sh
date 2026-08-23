@@ -22,6 +22,9 @@ if [[ "${requested_output}" != /* || "$(basename "${requested_output}")" != "sta
   exit 1
 fi
 
+# `coworld build` creates the parent before invoking the hook; CI calls the
+# hook directly, so create it here too rather than failing on the cd.
+mkdir -p "$(dirname "${requested_output}")"
 output_parent="$(cd "$(dirname "${requested_output}")" && pwd -P)"
 output_dir="${output_parent}/static-replay-viewer"
 if [[ "${output_dir}" != "${repo_dir}"/* || -L "${output_dir}" ]]; then
