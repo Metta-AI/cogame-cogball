@@ -1,192 +1,170 @@
-# cogball wire protocol
+# Cogball — wire protocol
 
-Everything a seat can see, and everything it may send. The authority for the
-runtime contract is `server/cogball/server.py`; this page is the human-readable
-version of it.
+Two protocols matter here: the **player** protocol (what a policy container
+speaks to the game) and the **global** protocol (what a spectator or the static
+replay viewer speaks). Both are Sprite v1 binary websocket streams, exactly as
+in the paintbot lineage.
 
-## Runtime contract (Coworld `COGAME_*`)
+## Runtime contract
+
+The game container reads and writes the standard `COGAME_*` URIs:
 
 | variable | meaning |
-| --- | --- |
-| `COGAME_CONFIG_URI` | the episode config JSON (required in episode mode) |
-| `COGAME_RESULTS_URI` | where `results.json` is written |
-| `COGAME_SAVE_REPLAY_URI` | where the replay JSON is written |
-| `COGAME_PLAYER_FAILURE_URI` | where a no-show seat is declared |
-| `COGAME_LOAD_REPLAY_URI` | set ⇒ replay mode: serve a recorded replay, run no episode |
-| `COGAME_HOST` / `COGAME_PORT` | bind address (default `0.0.0.0:8080`) |
+|---|---|
+| `COGAME_CONFIG_URI` | the episode config JSON (read at startup) |
+| `COGAME_RESULTS_URI` | the results document (written once, at game over) |
+| `COGAME_SAVE_REPLAY_URI` | the `COWLDBAL` replay bytes |
+| `COGAME_LOAD_REPLAY_URI` | a replay to serve instead of playing a match |
+| `COGAME_PLAYER_FAILURE_URI` | `{"failed_policy_index": N, "message": "…"}` |
+| `COGAME_EVENTS_URI` | the tier-2 JSON-lines analysis stream (`file://` only) |
+| `COGAME_HOST` / `COGAME_PORT` | the bind address (default `0.0.0.0:8080`) |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY_URI` | the coaching credential |
 
-Routes: `GET /healthz`, `GET /player?slot=N&token=T` (websocket),
-`GET /global` (broadcast websocket), `GET /client/global`,
-`GET /client/player`, and in replay mode `GET /replay-data` +
-`GET /client/replay`. A bad slot or token is `403`; a second connection to an
-already-connected slot is `409`.
+## Routes
 
-## The episode config
+| route | method | purpose |
+|---|---|---|
+| `/healthz` | GET | liveness; returns `healthy` |
+| `/player?slot=N&token=T` | GET (ws) | one seat's stream |
+| `/global` | GET (ws) | the spectator board |
+| `/replay` | GET (ws) | the replay board (replay mode) |
+| `/client/global`, `/client/player` | GET | the bitworld generic clients |
+| `/client/replay` | GET | the designed broadcast client |
+| `/client/league` | GET | the League Replayer shell (embeds the above) |
+| `/client/font.ttf` | GET | the chrome font |
+| `/replay-data` | GET | the current replay bytes |
 
-```json
-{"seed": 2864434397, "max_ticks": 7200, "turn_ticks": 150,
- "turn_budget_seconds": 12, "tick_deadline_ms": 1000,
- "player_connect_timeout_seconds": 90, "wall_clock_budget_seconds": 690,
- "num_agents": 2,
- "players": [{"name": "Azure"}, {"name": "Magenta"}],
- "tokens": ["token-0", "token-1"]}
-```
+A bad slot or a token that does not match the configured slot is refused with
+**403 before the websocket upgrade**. A viewer socket that carries player
+credentials is refused the same way.
 
-`seed` may be omitted; the server derives one and records it in the results and
-the replay. `num_agents`, if present, must equal the seat count.
+## The player protocol
 
-## What a player sends: one frame, ever
+### Registration — the only thing a seat ever sends that matters
 
-Decisions are made by the **game server** — the hosted Bedrock credential and
-the `anthropic_api_key` Coworld secret are injected into the game pod — so a
-player container is thin. On connect it sends exactly one frame and then only
-receives:
-
-```json
-{"type": "register",
- "prompt": "<strategy text, or empty>",
- "scripted": "formation" | "swarm" | null,
- "policy": "<free label, <= 48 runes>"}
-```
-
-A non-empty `prompt` makes the seat an **LLM seat**: that text is the policy,
-and the server asks Claude for a directive every turn on the seat's behalf. A
-seat that registers with neither field — or never registers at all, or never
-connects — plays the `formation` baseline. An over-long `prompt` is truncated
-to 4 000 runes, not rejected; it is never written to the replay or the results.
-
-## What the server sends
-
-Once per decision turn (every `turn_ticks` = 150 ticks = 5.0 s):
+On connect, a seat sends **one Sprite v1 chat message** (`0x81`, u16 length,
+then the raw payload) carrying:
 
 ```json
-{"type": "turn", "turn": 7, "tick": 1050, "view": { … },
- "directive_source": "llm"}
+{"type":"register",
+ "prompt":"<strategy text or empty>",
+ "scripted":"formation"|"swarm"|null,
+ "policy":"<free label>"}
 ```
 
-and at the end, followed by close:
+* A non-empty `prompt` makes the seat an **LLM seat**: the game server sends
+  that text to Claude once per coaching turn.
+* Otherwise `scripted` selects a built-in baseline; an unknown or absent value
+  is `formation`.
+* `policy` is a free label, capped at **48 runes**, recorded in the replay.
+* `prompt` is capped at **4000 runes** at the transport (over-long is
+  truncated, never rejected) and is **never** written to the replay or the
+  results.
+
+The payload is read WITHOUT an ASCII filter, so a non-ASCII policy label
+survives to the replay intact. Registration is re-sent once after the first
+received frame, in case the first send raced the slot registration.
+
+The server **intercepts** the registration: it is consumed, not written to the
+replay chat stream. A redacted `register` record is written instead. **Any
+other chat text from a player is dropped.**
+
+### Frames
+
+Each seat's websocket receives one binary Sprite v1 message per tick.
+
+**Visible:** the whole pitch and every body — soccer is a perfect-information
+sport, so there is no fog of war; the score; the clock; a self marker on its own
+three robots; and an invisible `own seat <alias>` marker naming the seat.
+
+**Hidden:** the opponent's directives, roles, intents, `note`/`say` and prompt;
+the episode seed; **real player names** (board labels carry only `Azure`/
+`Crimson` and `AZ-1..3`/`CR-1..3`); and future ticks.
+
+A seat sends **no inputs** — the server computes every actuator mask — so the
+Sprite v1 Ready packet (`0x85`) is legitimate after each received frame and is
+what lets `fastMode` pace the match by readiness. (ctf's warning about `0x85`
+corrupting input timing is about *player* clients whose own inputs are
+dead-reckoned; that hazard does not exist here.)
+
+## The replay bytes
+
+The replay is the starter's **binary `COWLDBAL`** format — the same format the
+static wasm viewer parses. Everything the viewer needs is in the bytes; no
+server is contacted except S3 for the file.
+
+| content | carries |
+|---|---|
+| header | magic `COWLDBAL`, format version, game name `cogball`, game version `1` |
+| config JSON | seed, `num_agents`, `maxTicks`, `turnTicks`, every physics constant, `players[].name`, `slots[].team`, `fastMode` |
+| joins | per seat: name, slot, token |
+| inputs | per **robot** (0..5), on change: the `uint8` actuator mask — the action log |
+| chats | the `register` / `directive` / `fallback` / `budget_guard` / `result` records |
+| hashes | one `gameHash` per tick — the integrity chain the viewer checks |
+
+Masks are indexed by **robot**, not by roster slot, and a player leaving does
+**not** shift the mask arrays: cogball's six robots are fixed for the whole
+match.
+
+### Record vocabulary
+
+| `k` | fields |
+|---|---|
+| `register` | `seat`, `alias`, `policy` (≤48 runes), `kind` (`llm`\|`scripted`), `baseline` |
+| `directive` | `turn`, `seat`, `alias`, `source` (`llm`\|`scripted`\|`fallback`), `latency_ms`, `note`, `robots`:[{`id`,`role`,`intent`,`target`,`pass_to`,`kick`,`say`}] |
+| `fallback` | `turn`, `seat`, `attempt` (1\|2), `cause`, `detail` (≤200 runes) |
+| `budget_guard` | `turn`, `remaining_s` |
+| `result` | the full results document, written once at game over |
+
+Every record is capped at **900 runes**, on a rune boundary.
+
+### Reading a replay without Nim
+
+`tools/replay_summary.py` (Python 3 standard library only — no Nim, no Docker)
+prints one strict-UTF-8 JSON object describing a `.bitreplay`:
+
+```bash
+python3 tools/replay_summary.py /tmp/ep.replay | jq .
+```
 
 ```json
-{"done": true, "result": { …the results document… }}
+{"protocol":"cogball/v1","gameVersion":"1","seed":679961,
+ "names":[…],"aliases":["Azure","Crimson"],"policyKinds":[…],
+ "tickCount":4800,"directives":[…],"fallbacks":0,"results":{…}}
 ```
 
-`GET /global` is broadcast-only: a status snapshot on connect, a throttled
-`{"tick": t}` progress feed, then the same done message.
+## Derived broadcast events
 
-## The per-seat view
+`stepEvents` derives these from state deltas during playback, so they cost no
+replay bytes and are identical live and in replay: `phase`, `kick`, `touch`,
+`shot`, `save`, `pass`, `interception`, `goal`, `kickoff`, `drop`, `turn_end`,
+`gameover`. `goal` and `drop` are **beats** — scrubber markers, and the trigger
+for the slow-mo goal replay. `touch` is throttled to at most one per robot per
+6 ticks.
 
-Numbers are rounded to 2 decimals.
+## Results document
+
+Written to `COGAME_RESULTS_URI`. It equals the manifest's `results_schema`
+key for key; that schema is `additionalProperties: false` and the certifier
+rejects any unknown field.
 
 ```json
-{"turn": 7, "of": 48, "clock": {"played_s": 35.0, "left_s": 205.0},
- "score": {"you": 1, "them": 0},
- "you": {"alias": "Azure", "attacking_x": "+20", "defending_x": "-20"},
- "pitch": {"x_min": -20, "x_max": 20, "y_min": -12.5, "y_max": 12.5,
-           "goal_half_width": 3.5, "your_penalty_area": "x <= -14, |y| <= 7"},
- "ball": {"pos": [3.21, -1.04], "vel": [4.1, 0.62], "speed": 4.15,
-          "possession": "AZ-2", "in_your_half": false},
- "your_robots": [{"id": "AZ-1", "pos": [-16.9, 0.4], "vel": [0.2, -0.1],
-                  "facing": [1.0, 0.0], "speed": 0.22, "kick_ready": true,
-                  "dist_to_ball": 20.1, "last_role": "keeper"}],
- "their_robots": [{"id": "MG-1", "pos": [7.7, 2.1], "vel": [-3.0, 0.4],
-                   "facing": [-0.99, 0.13], "speed": 3.03,
-                   "dist_to_ball": 5.6}],
- "last_turn": {"your_kicks": 2, "their_kicks": 1, "your_shots": 1,
-               "their_shots": 0, "goals": [], "possession_pct_you": 63},
- "your_last_directive": { … or null on turn 0 … }}
+{"names": ["daveey", "daveey-1"],
+ "scores": [0.667, 0.333],
+ "win": [true, false],
+ "team": ["azure", "crimson"],
+ "goals": [2, 1],
+ "shots": [9, 6],
+ "shotsOnTarget": [4, 2],
+ "saves": [1, 3],
+ "possessionTicks": [2640, 2160],
+ "llmTurns": [40, 0],
+ "fallbackTurns": [0, 0],
+ "reason": "complete",
+ "endRule": "full_time",
+ "finalTick": 4800,
+ "seed": 679961}
 ```
 
-**Visible:** the whole physical state (soccer is a perfect-information sport),
-the score, the clock, the turn index, the seat's own previous directive, and
-last-turn event counts.
-
-**Hidden:** the opponent's directives, roles, intents, `note`/`say` text and
-prompt — never, not even after the fact; the episode seed; real player names
-(a seat sees only `Azure` / `Magenta` and robot ids); the opponent's policy
-kind; and the future. Spectators see all of it in the replay. That asymmetry
-is deliberate.
-
-## The directive (what a coach replies)
-
-```json
-{"note": "compact, keeper stays home",
- "robots": [{"id": "AZ-1", "role": "keeper", "intent": "hold",
-             "target": [-17.0, 0.4], "pass_to": null, "kick": "auto",
-             "say": "holding the arc"}]}
-```
-
-exactly three entries, one per robot.
-
-| field | legal values | repair when violated |
-| --- | --- | --- |
-| `note` | string, ≤ **160 runes** | truncated to 160 runes |
-| `robots` | exactly the seat's 3 robots | extras dropped; missing ids filled from last turn, else from `formation` |
-| `robots[].id` | `AZ-1..3` / `MG-1..3`, case-insensitive, ≤ 8 runes | unmatched entries assigned by position |
-| `robots[].role` | `keeper` `back` `wing` `striker` | → `wing` |
-| `robots[].intent` | `chase` `intercept` `hold` `shoot` `pass` `clear` `press` | → `chase` |
-| `robots[].target` | `[x, y]`, finite | clamped to the pitch; non-finite/missing → the robot's current position |
-| `robots[].pass_to` | a *teammate* id ≠ self, or null | → null (and `pass` degrades to `shoot`) |
-| `robots[].kick` | `auto` `never` | → `auto` |
-| `robots[].say` | string, ≤ **48 runes** | truncated to 48 runes |
-
-Parsing is tolerant: markdown fences are stripped, the outermost balanced
-`{…}` is taken if the model prefixed prose, `robots` may be an object keyed by
-id, and numeric strings are accepted for `target`. Only if no object with at
-least one usable robot entry can be recovered does the **one** retry fire, and
-then the `formation` fallback.
-
-**Every string that reaches the replay is truncated on rune (codepoint)
-boundaries, never bytes.** A byte-truncated multi-byte character is exactly
-the bug that makes replay bytes render in a browser but fail a strict JSON
-parser.
-
-## Timing
-
-| bound | value |
-| --- | --- |
-| decision turn | 150 ticks (5.0 s of sim time), 48 per match |
-| first LLM attempt | 8.0 s |
-| retry | 3.5 s |
-| whole turn (both seats, one batch) | 12.0 s |
-| player connect wait | `player_connect_timeout_seconds` (90 s) |
-| engine hard stop | `wall_clock_budget_seconds` (690 s) → `reason: "deadline"` |
-| final done broadcast, per seat | 3.0 s |
-
-Both seats are queried in **one parallel batch** per turn (a single
-`asyncio.gather` under a single `asyncio.wait_for`), so a match costs 48 × 12 s
-of coaching at worst, not 96 × 12 s. If two more full turn budgets would
-overrun the hard stop, a **budget guard** drops the rest of the match onto the
-scripted layer, so the episode ends `complete`/`full_time` rather than
-`deadline`.
-
-## The results document (closed schema)
-
-```json
-{"names": ["daveey", "daveey-1"], "aliases": ["Azure", "Magenta"],
- "policy_kinds": ["llm", "scripted"], "scores": [0.667, 0.333],
- "win": [true, false], "goals": [1, 0], "reason": "complete",
- "end_rule": "full_time", "winner": 0, "final_tick": 7200, "final_turn": 48,
- "seed": 2864434397, "shots": [7, 4], "shots_on_target": [3, 1],
- "saves": [1, 3], "passes_completed": [9, 5], "interceptions": [4, 6],
- "possession_ticks": [4120, 3080],
- "distance_m": [211.4, 340.2, 298.7, 205.9, 318.0, 331.6],
- "llm_turns": [48, 0], "fallback_turns": [0, 0],
- "fallback_causes": [{"timeout": 0, "parse_error": 0, "transport_error": 0,
-                      "no_credentials": 0, "budget_guard": 0}, {}]}
-```
-
-`score(seat) = 0.5 + 0.5 · clamp(goal_difference / 3, −1, +1)`, and the two
-seats always sum to exactly 1.0. `reason` is one of `complete`, `deadline`,
-`fault`; `end_rule` carries the detail (`full_time`, `mercy`, `wall_clock`,
-`sim_fault`, `host_error`).
-
-## The replay
-
-UTF-8 JSON, `protocol: "cogball/v1"`. `seed` + `first_kickoff_seat` +
-`controls_b64` (tick_count × 18 bytes of quantised `(thrust i8, turn i8,
-kick u8)` per robot) + the pinned physics core reproduce the episode exactly.
-`keyframes` carry the state digest every 30 ticks so a re-simulation can be
-verified without trusting it, and `events` carry the human-readable story:
-`match_start`, `turn_start`, `directive`, `fallback`, `budget_guard`, `kick`,
-`touch`, `shot`, `save`, `pass_completed`, `interception`, `post`, `goal`,
-`kickoff`, `turn_end`, `end`.
+`names` are the **real policy names** (spectator side). `team` carries the
+in-game aliases.

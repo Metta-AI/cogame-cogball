@@ -1,99 +1,139 @@
 # Writing a cogball prompt
 
-A cogball policy is a prompt. You are not writing motor commands; you are
-writing a **coach**. Every five seconds of match time your prompt, plus the
-current state of the pitch, goes to the model, and the model answers with one
-directive for all three of your robots. A deterministic controller then
-executes that directive at 30 Hz for the next five seconds.
+A cogball policy is a **prompt**. You do not drive motors, and you do not write
+code: you coach. Every five seconds of match time the game server sends your
+prompt, plus the state of the pitch, to Claude and asks for one JSON directive
+for all three of your robots. A deterministic control layer then executes that
+directive for the next five seconds.
 
-So the question your prompt has to answer is: *given the ball here and my
-three robots there, who does what?*
+Forty turns, one directive each. That is the whole game from your side.
 
-## What the model sees
+## What your coach is told
 
-Your prompt, then a blank line, then the seat's view as JSON: ball position,
-velocity and speed; every robot's position, velocity, heading, speed and
-distance to the ball; whether each of your robots' kickers are off cooldown;
-the score; the clock; last turn's kick/shot counts and possession share; and
-the directive you played last turn. It sees `Azure` / `Magenta` and robot ids
-`AZ-1..3` / `MG-1..3` — never the real player behind the other seat.
+The system prompt is fixed and identical for both champions. Your prompt is
+appended under a **GUIDANCE FROM YOUR OPERATOR** heading, then the seat's view
+of the pitch:
 
-## What it must answer
+```json
+{"turn": 7, "of": 40, "clock": {"played_s": 35.0, "left_s": 165.0},
+ "score": {"you": 1, "them": 0},
+ "you": {"alias": "Azure", "attacking_x": "+20", "defending_x": "-20"},
+ "pitch": {"x_min": -20, "x_max": 20, "y_min": -12.5, "y_max": 12.5,
+           "goal_half_width": 3.5, "your_penalty_area": "x <= -14, |y| <= 7",
+           "walled": true},
+ "ball": {"pos": [3.21, -1.04], "vel": [4.10, 0.62], "speed": 4.15,
+          "possession": "AZ-2", "in_your_half": false, "on_boards": false},
+ "your_robots": [{"id": "AZ-1", "pos": [-16.9, 0.4], "vel": [0.2, -0.1],
+                  "facing": [1.0, 0.0], "speed": 0.22, "kick_ready": true,
+                  "dist_to_ball": 20.1, "last_role": "keeper"}, "… 3 …"],
+ "their_robots": [{"id": "CR-1", "pos": [7.7, 2.1], "vel": [-3.0, 0.4],
+                   "facing": [-0.99, 0.13], "speed": 3.03,
+                   "dist_to_ball": 5.6}, "… 3 …"],
+ "last_turn": {"your_kicks": 2, "their_kicks": 1, "your_shots": 1,
+               "their_shots": 0, "possession_pct_you": 63,
+               "goals": [{"tick": 890, "by": "AZ-3", "for": "you"}]},
+ "your_last_directive": "… what you played last turn, or null on turn 0 …"}
+```
+
+Everything is in **view coordinates**: metres from the centre spot. Your own
+goal and the one you attack are named for you every turn, so a prompt never has
+to remember which side it is on.
+
+## The directive
 
 ```json
 {"note": "compact, keeper stays home",
- "robots": [
-   {"id": "AZ-1", "role": "keeper", "intent": "hold", "target": [-17, 0.4],
-    "pass_to": null, "kick": "auto", "say": "holding the arc"},
-   {"id": "AZ-2", "role": "striker", "intent": "shoot", "target": [12, 1],
-    "pass_to": null, "kick": "auto", "say": "going for goal"},
-   {"id": "AZ-3", "role": "wing", "intent": "intercept", "target": [6, -5],
-    "pass_to": null, "kick": "auto", "say": "running the channel"}]}
+ "robots": [{"id": "AZ-1", "role": "keeper", "intent": "hold",
+             "target": [-17.0, 0.4], "pass_to": null,
+             "kick": "auto", "say": "holding the arc"}, "… 3 …"]}
 ```
 
-Exactly three entries, one per robot. The system prompt already states the
-schema, so your prompt should spend its words on **tactics**, not on JSON.
+| field | legal values | repaired to |
+|---|---|---|
+| `note` | ≤ 160 runes | truncated |
+| `robots` | exactly your three robots | extras dropped; missing filled from last turn, else from `formation` |
+| `id` | `AZ-1..3` / `CR-1..3`, case-insensitive | unmatched ids assigned by position |
+| `role` | `keeper` `back` `wing` `striker` | `wing` |
+| `intent` | `chase` `intercept` `hold` `shoot` `pass` `clear` `press` | `chase` |
+| `target` | `[x, y]` metres | clamped into the pitch; missing → the robot's current position |
+| `pass_to` | a *teammate* id ≠ self | `null` (and `pass` degrades to `shoot`) |
+| `kick` | `auto` `never` | `auto` |
+| `say` | ≤ 48 runes | truncated |
 
-## The seven intents, and what the controller actually does with each
+Parsing is deliberately forgiving: markdown fences, a prose prefix, an
+id-keyed `robots` object, numeric strings and unknown enums all repair. Only
+when no usable robot entry can be recovered at all does the turn retry once,
+and then fall back to the `formation` baseline.
 
-| intent | the controller drives the robot to… | use it when |
-| --- | --- | --- |
-| `chase` | the ball itself | you just want a body on it |
-| `intercept` | where the ball *will be* (up to 1.5 s of lead) | a loose ball, a cut-out |
-| `hold` | your `target`, then turns to face the ball | keepers, backs, anyone who must not be dragged out |
-| `shoot` | 0.9 m behind the ball on the line to their goal, then strikes | the ball is in front of goal |
-| `pass` | 0.9 m behind the ball on the line to `pass_to` | you have a free teammate |
-| `clear` | 0.9 m behind the ball on the line up the touchline | the ball is in your own box |
-| `press` | the opponent nearest the ball, plus half a second of lead | you want to deny time, not win the ball |
+## What each intent actually does
 
-`target` is used **directly** by `hold`; for every other intent it is a 20 %
-bias on the steering point, which is how you nudge a chaser to favour one side
-of the pitch. `kick: "never"` makes a robot shepherd the ball instead of
-striking it — useful for a robot you want to keep possession with, expensive if
-you use it on your striker.
+The control layer is the same code for every policy, so two prompts are
+strictly comparable.
 
-## Five things that decide matches
+| intent | the robot… |
+|---|---|
+| `chase` | drives at the ball |
+| `intercept` | drives to where the ball will be (lead time from the closing speed) |
+| `hold` | holds `target` and turns to face the ball once it arrives |
+| `shoot` | lines up 0.9 m behind the ball on the goal side and strikes it |
+| `pass` | the same, aimed at `pass_to`'s leading position |
+| `clear` | the same, aimed away from your own goal toward a touchline |
+| `press` | shadows the opponent nearest the ball |
 
-1. **Never leave the goal empty.** One robot on `hold` at roughly
-   `(±17, ball_y / 3)` covers the near post and is worth more than a third
-   attacker. Every strong cogball prompt names a keeper every single turn.
-2. **Robots are car-like.** Thrust acts along the heading and lateral velocity
-   is scrubbed off by grip, so a robot that has to turn 180° loses about a
-   second. Sending the *nearest* robot at the ball beats sending the *best*
-   one.
-3. **Rotate roles by distance, not by name.** The robot nearest the ball
-   should be the one attacking it this turn, whichever id that is. Say so in
-   the prompt: "the nearest robot always attacks, the deepest always keeps".
-4. **A shot from outside 12 m is a giveaway.** The ball loses most of its pace
-   in about three seconds; a long shot arrives slowly and hands over
-   possession. Prefer `pass` to a supporting robot.
-5. **Five seconds is a long time.** Whatever you order will still be running
-   five seconds from now. Prefer intents that track the ball live (`chase`,
-   `intercept`, `shoot`, `press`) for the robot near the action, and `hold`
-   with an explicit target for the robots that should stay where they are.
+`target` is used **directly** by `hold` and as a 20 % bias by everything else,
+so it is a useful nudge even on `chase`. `kick: "never"` makes a robot shepherd
+the ball instead of striking it — useful for a keeper you want between the ball
+and the goal rather than swinging at it.
 
-## Things that will not work
+**The boards-escape rule overrides you.** When the ball hugs a wall outside the
+goal-mouth corridor, the closest robot of your trio aims its kick back toward
+the middle and kicks even if you said `never`; its two teammates are pushed
+3 m off the boards so a whole trio cannot pile into one corner. The sim also
+drops the ball on a neutral spot if it has not moved 1.5 m in 10 s. You cannot
+turn either off, and you should not want to: a buried ball is a 0–0.
 
-- Micro-managing motors. There is no thrust or steering field; the controller
-  owns that.
-- Referring to "the last time we played" — nothing carries between episodes.
-- Talking to the other seat. `note` and `say` are one-way, into the replay
-  feed. (They are the only thing a spectator sees of your reasoning, so a good
-  `note` is genuinely worth writing.)
-- Asking for a formation by name. Say who holds where and who goes for the
-  ball; the schema has no formation field.
+## What actually wins
 
-## The two shipped champions
+Things that show up in the replays:
 
-`cogball-total` plays total football: always a keeper, always a presser, a
-third robot running ahead of the ball into space, roles rotating by distance,
-and a preference for the pass over the low-percentage shot.
+* **Never leave your goal empty.** One robot with `role: "keeper"` and
+  `intent: "hold"` on the arc ~3 m in front of your line, with its `y` tracking
+  about a third of the ball's `y`, is worth more than a third attacker.
+* **Rotate by distance, not by name.** The nearest robot attacks; the deepest
+  keeps. Re-assign the roles every turn from `dist_to_ball`.
+* **Shoot from inside 12 m, pass from outside it.** A long shot is a free
+  clearance for the other side; a pass to a robot already in space is not.
+* **Use the whole 5 seconds.** A directive is a *plan*, not a twitch. Sending
+  three robots at the ball wastes the turn — that is exactly what the `swarm`
+  baseline does, and it loses.
+* **Watch `on_boards`.** When it is true, send exactly one robot at the ball and
+  keep the others in open space to collect the clearance.
+* **Say something.** `note` and `say` appear in the broadcast feed. They cost
+  nothing and they are how a spectator sees you playing.
 
-`cogball-counter` plays the counter: two robots behind the ball line holding
-station, one pressing; the moment its team wins the ball, the presser shoots,
-the back breaks wide, and only the keeper stays home. It never sends all three
-robots past halfway.
+## Fielding a policy
 
-Both are pure prompts against the same image and the same controller. If you
-want to beat them, the fastest lever is not a cleverer shape — it is being
-more decisive about *who* attacks and *who* stays.
+Reuse the shipped image and set one environment variable:
+
+```bash
+coworld upload-policy coworld-cogball:latest \
+  --name my-cogball \
+  --run /bin/cogball-player \
+  --secret-env PLAYER_PROMPT="<your strategy>"
+```
+
+`PLAYER_SCRIPTED=formation` or `PLAYER_SCRIPTED=swarm` fields a built-in
+baseline instead — the same directive shape, no LLM, microseconds per turn.
+
+## Degrading
+
+Every wait is bounded. Both seats' calls go out as **one parallel batch** per
+turn with a 6.0 s deadline; anything that timed out, errored, returned non-JSON
+or returned no usable robot entry is retried **once** as a single batch with a
+2.5 s deadline, all inside a 9.0 s monotonic per-turn cap. Two consecutive
+failures play the `formation` directive and write a `fallback` record naming the
+cause. If the wall clock gets close to the budget, a `budget_guard` record fires
+and the rest of the match runs on the scripted layer, so the episode ends
+`complete/full_time` rather than `deadline`.
+
+None of that is a punishment: it is why a slow model never costs you the match.
