@@ -92,6 +92,37 @@ proc exactlyOneKeeper() =
           "the keeper is not the deepest robot"
   report "`formation` always fields exactly one keeper, the deepest robot"
 
+proc swarmRolesAreFixed() =
+  ## `swarm` reports striker/striker/back: the deepest robot is the `back`
+  ## whatever the ball is doing. The role used to flip to striker whenever the
+  ## ball crossed into the opponent half, so the seat view's `last_role` and
+  ## the feed described a robot that changed identity twice a minute while
+  ## doing the same job.
+  var rng = initRand(0x5A11)
+  var sim = playing(testConfig())
+  var sawBothHalves: array[2, bool]
+  for _ in 0 ..< 200:
+    sim.pseudoWorld(rng)
+    for seat in Seat:
+      let
+        directive = sim.swarmDirective(seat, 0)
+        deepest = sim.deepestRobot(seat) - firstRobotOf(seat)
+      sawBothHalves[ord(sim.ballInOwnHalf(seat))] = true
+      var backs = 0
+      for slot in 0 ..< RobotsPerSeat:
+        let role = directive.robots[slot].role
+        if slot == deepest:
+          doAssert role == roleBack,
+            "swarm's deepest robot reported " & roleText(role) & ", not back"
+          inc backs
+        else:
+          doAssert role == roleStriker,
+            "swarm reported " & roleText(role) & " for a chasing robot"
+      doAssert backs == 1, "swarm fielded " & $backs & " backs"
+  doAssert sawBothHalves[0] and sawBothHalves[1],
+    "the sweep never saw the ball in both halves, so it proved nothing"
+  report "swarm's roles are striker/striker/back in both halves"
+
 proc formationBeatsSwarm() =
   ## The pinned match: at seed 679961 a formation-vs-swarm episode completes,
   ## formation wins, and it is NOT 0-0 — the round-1 corner regression, where
@@ -128,6 +159,7 @@ when isMainModule:
   boundedOrders()
   unknownBaselineIsFormation()
   exactlyOneKeeper()
+  swarmRolesAreFixed()
   formationBeatsSwarm()
   goalsHappenAcrossSeeds()
   echo "test_baselines: all good"

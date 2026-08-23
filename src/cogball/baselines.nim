@@ -34,8 +34,10 @@ const
 proc ballInOwnHalf*(sim: SimServer, seat: Seat): bool {.inline.} =
   if attackDir(seat) > 0: sim.ball.x < CentreX else: sim.ball.x > CentreX
 
-proc deepestRobot(sim: SimServer, seat: Seat): int =
-  ## The robot nearest its own goal; ties by ascending robot index.
+proc deepestRobot*(sim: SimServer, seat: Seat): int =
+  ## The robot nearest its own goal; ties by ascending robot index. Exported
+  ## so tests/test_baselines.nim can assert the role labels against the same
+  ## choice the baselines make, rather than re-deriving it.
   let own = ownGoalX(seat)
   var
     best = firstRobotOf(seat)
@@ -141,6 +143,12 @@ proc swarmDirective*(sim: SimServer, seat: Seat, turn: int): Directive =
   ## Everyone chases. The deepest robot minds the goal only while the ball is
   ## in its own half. Loses to `formation`, which is the point: the ladder
   ## needs a spread.
+  ##
+  ## Roles are reported striker/striker/back: the deepest robot is the `back`
+  ## whatever the ball is doing, because the ROLE is what the feed and the
+  ## seat view read as "who is this robot", and a label that flickers between
+  ## striker and back every time the ball crosses the halfway line describes
+  ## nothing. Only its INTENT depends on the ball's half.
   result = emptyDirective(seat)
   result.turn = int32(turn)
   result.source = dsScripted
@@ -152,15 +160,14 @@ proc swarmDirective*(sim: SimServer, seat: Seat, turn: int): Directive =
   for slot in 0 ..< RobotsPerSeat:
     let i = base + slot
     var order = RobotOrder(kick: kickAuto, passTo: -1)
+    order.role = if i == keeper: roleBack else: roleStriker
     if i == keeper and guard:
       let target = sim.keeperTarget(seat)
-      order.role = roleBack
       order.intent = inHold
       order.targetX = target.x
       order.targetY = target.y
       order.say = "minding the goal"
     else:
-      order.role = roleStriker
       order.intent = inChase
       order.targetX = sim.ball.x
       order.targetY = sim.ball.y
