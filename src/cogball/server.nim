@@ -468,11 +468,15 @@ proc runServerLoop*(
     resultRecordWritten = false
 
   proc recordAndWrite(text: string) =
-    ## The ONE path a chat record takes: into the replay AND back through
-    ## `applyRecord`, so the broadcast feed reads identically live and in
-    ## playback.
-    replayWriter.writeChat(tickTime(sim.tickCount), 0, text)
-    sim.applyRecord(text)
+    ## The ONE path a chat record takes: capped, into the replay AND back
+    ## through `applyRecord`, so the broadcast feed reads identically live and
+    ## in playback. The cap is applied HERE, not only in `engine.addRecord`, so
+    ## `register` and `result` obey it too -- a long policy name is otherwise
+    ## unbounded on its way to the replay. `capRecord` shrinks structurally, so
+    ## a record over the cap stays parseable JSON.
+    let record = capRecord(text)
+    replayWriter.writeChat(tickTime(sim.tickCount), 0, record)
+    sim.applyRecord(record)
 
   while true:
     var

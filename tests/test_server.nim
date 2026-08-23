@@ -9,7 +9,7 @@
 ## available. Everything asserted here is reachable without a socket, which is
 ## the point — a contract you can only check by hand is not a contract.
 
-import std/[json, os, strutils]
+import std/[json, os, strutils, unicode]
 import lib/helpers
 import cogball/[broadcast, decide, global, sim_config]
 
@@ -191,6 +191,41 @@ proc healthAndRoutesExist() =
       "the named edit `" & marker & "` is no longer marked in server.nim"
   report "every documented route and all four named edits are present"
 
+proc everyRecordKindObeysTheCap() =
+  ## tests/test_replay.nim asserts EVERY chat record in a real episode is
+  ## <= MaxDirectiveRecordRunes, but only records built through
+  ## `engine.addRecord` used to be capped: `register` and `result` went to the
+  ## writer raw. `register.policy` is clipped to 48 runes on the way in, but
+  ## `result` carries the two REAL policy names and nothing bounded them, so a
+  ## long enough name would have broken that assertion on a real episode.
+  ## The server now caps at its single `recordAndWrite` choke point.
+  var config = testConfig()
+  let longName = repeat("a-policy-with-a-very-long-name-", 30)
+  config.slots[0].name = longName
+  config.slots[1].name = longName & "-2"
+  var sim = initSimServer(config)
+  sim.gameEventLoggingEnabled = false
+  sim.startGame()
+  sim.finishGame(reasonComplete, erFullTime)
+  let register = $(%*{
+    "k": "register", "seat": 0, "alias": seatAlias(Azure),
+    "policy": longName, "kind": "llm", "baseline": ""})
+  for raw in [sim.resultRecordJson(), register]:
+    doAssert raw.runeLen > MaxDirectiveRecordRunes,
+      "this record no longer exceeds the cap, so the test measures nothing"
+    let capped = capRecord(raw)
+    doAssert capped.runeLen <= MaxDirectiveRecordRunes,
+      "an uncapped record of " & $capped.runeLen & " runes reached the replay"
+    doAssert isValidUtf8(capped), "a record was cut mid-character"
+    let node = parseJson(capped)
+    doAssert node{"k"}.getStr() in ["result", "register"],
+      "the capped record is no longer identifiable"
+  # ...and the server writes every record through that one capped path.
+  let source = readFile("src/cogball/server.nim")
+  doAssert source.contains("let record = capRecord(text)"),
+    "recordAndWrite no longer caps the records it writes"
+  report "register and result records obey the record cap and stay parseable"
+
 proc lobbyTimeoutDoesNotEndTheEpisode() =
   ## A seat that never connects does NOT end the episode: the no-show is
   ## declared and its trio plays `formation` to full time.
@@ -218,6 +253,7 @@ when isMainModule:
   twoNameSpaces()
   artifactWrites()
   chromeFrameIsWellFormed()
+  everyRecordKindObeysTheCap()
   healthAndRoutesExist()
   lobbyTimeoutDoesNotEndTheEpisode()
   echo "test_server: all good"
