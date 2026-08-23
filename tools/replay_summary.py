@@ -173,7 +173,7 @@ def parse(raw):
             raise ValueError("unknown replay record type 0x%02x" % kind)
 
     directives = []
-    fallbacks = 0
+    fallback_attempts = 0
     guards = []
     results = None
     kinds = [None, None]
@@ -198,7 +198,9 @@ def parse(raw):
                 "says": [r.get("say") for r in record.get("robots", [])],
             })
         elif key == "fallback":
-            fallbacks += 1
+            # One record per FAILED ATTEMPT, so attempt 1 leaves a record even
+            # when the retry succeeds. See `fallbacks` below.
+            fallback_attempts += 1
         elif key == "budget_guard":
             guards.append(record.get("turn"))
         elif key == "register":
@@ -208,6 +210,14 @@ def parse(raw):
                 labels[seat] = record.get("policy")
         elif key == "result":
             results = record.get("results")
+
+    # `fallbacks` is the number of TURNS that actually played the scripted
+    # fallback, which is what the phase-60 check means by it: a `fallback`
+    # record is written per failed ATTEMPT, so attempt 1 leaves one behind even
+    # when the retry lands and the turn ends up sourced "llm". Counting records
+    # would report more fallen-back turns than there were. The raw record count
+    # stays available as `fallbackAttempts` for forensics.
+    fallbacks = sum(1 for d in directives if d.get("source") == "fallback")
 
     names = [entry.get("name", "") for entry in config.get("players", [])]
     if joins:
@@ -229,6 +239,7 @@ def parse(raw):
         "inputRecords": inputs,
         "directives": directives,
         "fallbacks": fallbacks,
+        "fallbackAttempts": fallback_attempts,
         "budgetGuards": guards,
         "results": results,
     }

@@ -47,6 +47,23 @@ proc recordEpisode(path: string): tuple[hashes: seq[uint64], sim: SimServer] =
           var directive = sim.baselineDirective(
             seat, (if seat == Azure: "formation" else: "swarm"), turn)
           directive.robots[0].say = clipRunes(NonAsciiSay, MaxSayRunes)
+          # Two hand-planted attempt records, so the summary's `fallbacks`
+          # count has something to be wrong about: turn 1 fails attempt 1 and
+          # then SUCCEEDS on the retry (source stays "llm" -- that turn did not
+          # fall back), turn 2 fails both attempts and plays the scripted
+          # fallback. A count of `fallback` RECORDS would report two fallen-back
+          # turns where there was one.
+          if seat == Azure and turn == 1:
+            directive.source = dsLlm
+            sim.emit(writer, $(%*{
+              "k": "fallback", "turn": turn, "seat": ord(seat),
+              "attempt": 1, "cause": "timeout", "detail": ""}))
+          elif seat == Azure and turn == 2:
+            directive.source = dsFallback
+            for attempt in 1 .. 2:
+              sim.emit(writer, $(%*{
+                "k": "fallback", "turn": turn, "seat": ord(seat),
+                "attempt": attempt, "cause": "timeout", "detail": ""}))
           sim.activeDirective[seat] = directive
           sim.hasDirective[seat] = true
           sim.emit(writer, $directiveJson(sim, seat, directive))
@@ -182,6 +199,19 @@ proc run() =
       if say.getStr().contains("\u26BD"):
         sawEmojiSay = true
   doAssert sawEmojiSay, "the emoji `say` did not survive to the summary"
+  # `fallbacks` is the number of TURNS that fell back -- what the phase-60
+  # check reads it as -- not the number of per-attempt `fallback` records.
+  doAssert summary["fallbackAttempts"].getInt == 3,
+    "expected three fallback ATTEMPT records, saw " &
+      $summary["fallbackAttempts"].getInt
+  doAssert summary["fallbacks"].getInt == 1,
+    "expected one turn that actually fell back, saw " &
+      $summary["fallbacks"].getInt
+  var fellBack = 0
+  for directive in summary["directives"]:
+    if directive["source"].getStr() == "fallback":
+      inc fellBack
+  doAssert summary["fallbacks"].getInt == fellBack
   report "replay_summary.py output parses under a strict UTF-8 JSON parser"
 
   # ---- the reason is in the legal enum -------------------------------------

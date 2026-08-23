@@ -150,7 +150,13 @@ python3 tools/replay_summary.py /tmp/ep.replay | jq .
 
 `replay_summary.py` is Python-3-stdlib only — no Nim, no Docker — and reports
 the protocol, the seed, the names, every directive with its source, the fallback
-count and the results document. For a full re-simulation use
+count and the results document. Two fallback numbers, and they mean different
+things: **`fallbacks`** is the number of TURNS that actually played the scripted
+directive (`directives[] | select(.source == "fallback") | length`), which is
+what the phase-60 check wants; **`fallbackAttempts`** is the raw count of
+`fallback` records, one per failed ATTEMPT, so a turn whose attempt 1 timed out
+and whose retry landed contributes to `fallbackAttempts` and not to
+`fallbacks`. For a full re-simulation use
 `parseReplayBytes` + `initReplayRuntime`, exactly like the wasm viewer.
 
 ## Two name spaces, and why
