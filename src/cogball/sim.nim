@@ -632,7 +632,10 @@ proc stepPlaying(sim: var SimServer, inputs: openArray[InputState]) =
   if frozen:
     # Kickoff freeze: masks are forced to zero and physics is skipped, but the
     # tick still advances, the hash is still written, and the turn boundary
-    # still fires.
+    # still fires. EVERY velocity in the world goes to zero, the ball's
+    # included -- a ball that drifts while nobody may move is not a frozen
+    # restart. The kickoff reset that precedes every freeze already parks the
+    # ball, so this holds the invariant rather than creating it.
     for i in 0 ..< RobotCount:
       sim.robots[i].vx = 0
       sim.robots[i].vy = 0

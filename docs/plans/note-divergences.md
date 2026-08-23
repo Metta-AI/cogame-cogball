@@ -99,3 +99,21 @@ single frame of jitter, which a 0.75 m half-width would allow.
 Everything else in step 8 matches the note exactly: increment-then-compare
 (`>=`) means the drop fires on the 240th consecutive tick, pinned by
 `tests/test_physics.nim`.
+
+---
+
+## The kickoff freeze zeroes the BALL's velocity too
+
+**Note** (§Resolution order step 2): "every robot's mask is forced to 0, every
+velocity and `spin` is set to 0". The ball is not named.
+
+**Code** (`src/cogball/sim.nim`, `stepPlaying`'s frozen branch): the six
+robots' `vx`/`vy`/`spin` are zeroed **and** so are `sim.ball.vx`/`vy`.
+
+**Why.** "Every velocity" is read as every velocity in the world, ball
+included, which is what a frozen kickoff means: a ball that drifts while the
+players cannot move is not a frozen restart. In practice it is already true —
+the kickoff reset that precedes every freeze puts the ball on the centre spot
+at rest — so the branch is a belt-and-braces invariant rather than a behaviour,
+and it holds even if some future restart forgets to zero the ball. It is inside
+the hashed step, so the viewer re-derives it identically.
