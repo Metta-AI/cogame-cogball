@@ -28,8 +28,10 @@ SERVER_PID=$!
 
 # Wait for the port to actually listen before spawning bots — a slow start
 # would otherwise strand the bots and hang the lobby forever, silently.
+# bash's own /dev/tcp, not netcat: a runner without netcat would otherwise
+# strand the bots and hang the lobby, silently.
 for i in $(seq 1 40); do
-  nc -z 127.0.0.1 "$PORT" 2>/dev/null && break
+  (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null && break
   if ! kill -0 $SERVER_PID 2>/dev/null; then
     echo "server died during startup; log tail:" >&2
     tail -20 "$LOG" >&2
@@ -37,7 +39,8 @@ for i in $(seq 1 40); do
   fi
   sleep 0.5
 done
-nc -z 127.0.0.1 "$PORT" || { echo "server never listened" >&2; tail -20 "$LOG" >&2; exit 1; }
+(exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null || {
+  echo "server never listened" >&2; tail -20 "$LOG" >&2; exit 1; }
 
 BOT_PIDS=()
 for i in ${SLOTS:-$(seq 0 1)}; do

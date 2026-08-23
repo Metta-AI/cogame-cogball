@@ -33,7 +33,9 @@ var
   rigLoaded: array[Seat, bool]
   rigCache = initTable[int, seq[uint8]]()
   ballCache = initTable[int, seq[uint8]]()
-  discCache = initTable[int, seq[uint8]]()
+  discCache = initTable[(int, uint8, uint8, uint8, uint8), seq[uint8]]()
+    ## Keyed by a TUPLE, not a packed int: `int` is 32 bits under
+    ## --cpu:wasm32 and a size-major packing overflows it.
 
 proc gameDir*(): string =
   ## Assets resolve against the process working directory, exactly as ctf does
@@ -144,8 +146,7 @@ proc ballPixels*(renderScale = 1): seq[uint8] =
 proc discPixels*(size: int, colour: ColorRGBA, feather = true): seq[uint8] =
   ## A soft round dot: the ball trail, the turf paint and the goal confetti all
   ## draw from this one bake, keyed by (size, colour).
-  let key = size * 100_000_000 + int(colour.r) * 1_000_000 +
-    int(colour.g) * 10_000 + int(colour.b) * 100 + int(colour.a) div 4
+  let key = (size, colour.r, colour.g, colour.b, colour.a)
   if discCache.hasKey(key):
     return discCache[key]
   var canvas = newImage(max(1, size), max(1, size))
