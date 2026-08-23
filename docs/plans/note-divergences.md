@@ -74,3 +74,28 @@ letting the ball's hull pass through the goal line or deleting the posts, and
 it is a change to `sim.nim` — a `GameVersion` bump that invalidates every
 recorded replay — for at most 0.35 m at each edge of a 7 m mouth. The number
 is written down here instead, and `docs/RULES.md` states it for players.
+
+---
+
+## `StalemateBox` is a HALF-width: the stalemate box is 3 m across
+
+**Note** (§Resolution order step 8, §Neutral drop): "inside the **1 500 000 µm
+box** anchored where the counter last reset".
+
+**Code** (`src/cogball/sim.nim`, `sim_types.nim`): the test is
+`abs(dx) <= StalemateBox and abs(dy) <= StalemateBox` with
+`StalemateBox = 1_500_000`, so the counter runs while the ball stays inside a
+**3 m × 3 m square** centred on the anchor — 1.5 m is the half-width, not the
+side.
+
+**Why it reads that way.** The note's phrase is ambiguous and the code had to
+pick one. Half-width is the right pick: the anchor is re-set to the ball's own
+position on every reset, so the quantity that matters is "how far can the ball
+wander from where it was parked before we stop calling it parked", and that is
+a radius. It also cannot be reached in one tick from the anchor —
+`BallMaxSpeed` is 1 041 600 µm/tick — so the counter cannot be reset by a
+single frame of jitter, which a 0.75 m half-width would allow.
+
+Everything else in step 8 matches the note exactly: increment-then-compare
+(`>=`) means the drop fires on the 240th consecutive tick, pinned by
+`tests/test_physics.nim`.

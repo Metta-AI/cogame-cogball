@@ -116,7 +116,8 @@ RNG. Play resumes 25 ticks later.
 With a fully walled pitch the corners are an absorbing state: a robot (r =
 0.55 m) can never get corner-side of the ball (r = 0.35 m), and every push
 drives it deeper. So the sim guarantees an escape. If the ball centre stays
-inside a 1.5 m box for **240 ticks (10 s)**, it teleports to the nearest
+within **1.5 m** of where the counter last re-anchored — a 3 m × 3 m box —
+for **240 ticks (10 s)**, it teleports to the nearest
 neutral drop spot at rest, every robot within 3 m is pushed radially out to
 exactly 3 m, and a `drop` event fires. The drop is inside `gameHash`: it is
 part of the recorded, re-simulated truth, so no policy can defeat it. The

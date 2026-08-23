@@ -650,7 +650,10 @@ proc stepPlaying(sim: var SimServer, inputs: openArray[InputState]) =
   if sim.lastTouch.seat >= 0:
     inc sim.stats[Seat(sim.lastTouch.seat and 1)].possessionTicks
 
-  # Stalemate: the ball has to leave a 1.5 m box to reset the counter.
+  # Stalemate: StalemateBox is a HALF-width, so the ball has to leave a
+  # 3 m x 3 m square centred on the anchor to reset the counter. It cannot
+  # do that in one tick from the anchor (BallMaxSpeed is 1.04 m/tick), so a
+  # single frame of jitter can never reset it.
   let
     dx = sim.ball.x - sim.anchorX
     dy = sim.ball.y - sim.anchorY

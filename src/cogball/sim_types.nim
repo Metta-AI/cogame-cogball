@@ -101,7 +101,9 @@ const
   DefaultGameOverTicks* = 120
   DefaultMercyGoalDiff* = 5
   DefaultStalemateTicks* = 240   ## 10 s parked ball -> neutral drop.
-  StalemateBox* = 1_500_000'i32  ## um; the ball must leave this to reset it.
+  StalemateBox* = 1_500_000'i32
+    ## um, a HALF-width: the ball must leave a 3 m x 3 m square centred on
+    ## the anchor to reset the stalemate counter.
   DropClearRadius* = 3_000_000'i32
   KickoffFreezeTicks* = 25'i32
   AssistWindowTicks* = 96'i32
