@@ -275,6 +275,18 @@ jobs:
           find "${out}" -type f -printf '  %p (%s bytes)\n'
 
       # -----------------------------------------------------------------
+      # THE SHELL BOOTS. Everything else reads the shell as TEXT: no test
+      # EXECUTES the page's inline script, which is how 0.1.3 shipped a bundle
+      # whose shell died on `ReferenceError: COG_BASE is not defined` before
+      # core.start() with the whole suite green and every asset serving 200.
+      # The harness runs each page's scripts in a DOM-less browser stub and
+      # fails on an undefined global, an escaping exception, or a board page
+      # that finishes without starting its replay Worker.
+      # -----------------------------------------------------------------
+      - name: The bundle's shell boots
+        run: node tools/ci/viewer_shell_check.cjs "$PWD/dist/static-replay-viewer"
+
+      # -----------------------------------------------------------------
       # THE NATIVE <-> WASM DETERMINISM GATE. The bundle re-simulates the
       # recorded action log through the SAME sim module compiled for wasm32
       # and compares every tick's gameHash against the recording. `int` is 32

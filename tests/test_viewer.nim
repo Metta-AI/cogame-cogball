@@ -3,8 +3,10 @@
 ## present and cogball's.
 ##
 ## The RUNTIME half is the CI `wasm-viewer` job: the bundle builds, contains a
-## non-empty `.wasm`, and `tools/wasm_replay_smoke.cjs` loads a fixture and
-## advances 300 frames with no mismatch and no abort.
+## non-empty `.wasm`, `tools/ci/viewer_shell_check.cjs` executes every page's
+## scripts (this file only reads them, so a shell that throws on boot passes
+## here), and `tools/wasm_replay_smoke.cjs` loads a fixture and advances 300
+## frames with no mismatch and no abort.
 
 import std/[os, strutils]
 import lib/helpers
