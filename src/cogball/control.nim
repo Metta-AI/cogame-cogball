@@ -224,13 +224,17 @@ proc compileMask*(
         abs(int64(robot.x) - int64(ownX))
     if not betweenX:
       wantKick = false
-    aimX = CentreX
-    aimY = CentreY
   if wantKick and robot.kickCooldown == 0:
     let ballDist = distI(ball.x - robot.x, ball.y - robot.y)
     if ballDist <= KickRange:
-      if intent in {inChase, inIntercept} and not boardsOverride:
-        # No declared kick target: drive the ball away from your own goal.
+      if intent in {inChase, inIntercept, inHold, inPress} and
+          not boardsOverride:
+        # No declared kick target: drive the ball AWAY FROM YOUR OWN GOAL.
+        # `hold` and `press` used to aim at the centre spot instead, which is a
+        # different direction for any robot not on the halfway line -- and
+        # those are exactly the two intents that only kick when the ball is
+        # between them and their own goal, i.e. when clearing it up the pitch
+        # is the whole point of the kick.
         aimX = targetGoalX(seat)
         aimY = CentreY
       let

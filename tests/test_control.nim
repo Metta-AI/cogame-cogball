@@ -111,6 +111,65 @@ proc cooldownRespected() =
       "the cooldown was ignored on " & robotId(i)
   report "the kick cooldown is respected"
 
+proc clearingKicksAimUpField() =
+  ## For `hold` and `press` -- the two intents that only kick when the ball is
+  ## between the robot and its OWN goal -- the kick aim used to be the centre
+  ## spot, which for any robot off the halfway line is a different direction
+  ## from "away from your own goal". Those are exactly the kicks where getting
+  ## the ball up the pitch is the whole point. The aim is now the opponent
+  ## goal, as it already was for `chase` and `intercept`.
+  for intent in [inHold, inPress]:
+    var sim = playing(testConfig())
+    for i in 0 ..< RobotCount:
+      sim.robots[i].x = CentreX + int32(i) * 400_000'i32
+      sim.robots[i].y = 22_000_000'i32
+      sim.robots[i].vx = 0
+      sim.robots[i].vy = 0
+      sim.robots[i].kickCooldown = 0
+    # AZ-1 near the top touchline with the ball goal-side of it, so the
+    # between-the-robot-and-its-own-goal gate opens. From there the pitch
+    # centre and the opponent goal are far apart in brads, which is the whole
+    # point: on the halfway line the two aims coincide and prove nothing.
+    sim.robots[0].x = 20_000_000'i32
+    sim.robots[0].y = 3_000_000'i32
+    sim.ball.x = 19_000_000'i32
+    sim.ball.y = 3_000_000'i32
+    sim.ball.vx = 0
+    sim.ball.vy = 0
+    let
+      toGoal = bradsOfVectorI(targetGoalX(Azure) - sim.robots[0].x,
+        CentreY - sim.robots[0].y)
+      toCentre = bradsOfVectorI(CentreX - sim.robots[0].x,
+        CentreY - sim.robots[0].y)
+    var apart = abs(int(toGoal) - int(toCentre))
+    if apart > 128:
+      apart = 256 - apart
+    doAssert apart > 32,
+      "this geometry cannot tell the two aims apart (" & $apart & " brads)"
+
+    for seat in Seat:
+      var directive = emptyDirective(seat)
+      for slot in 0 ..< RobotsPerSeat:
+        directive.robots[slot] = RobotOrder(
+          role: roleBack, intent: intent,
+          targetX: sim.robots[firstRobotOf(seat) + slot].x,
+          targetY: sim.robots[firstRobotOf(seat) + slot].y,
+          passTo: -1, kick: kickAuto, say: "")
+      sim.activeDirective[seat] = directive
+      sim.hasDirective[seat] = true
+
+    # Facing the opponent goal: the kick fires.
+    sim.robots[0].headingQ = toGoal * 16
+    let upField = sim.compileMasks(sim.activeDirective)
+    doAssert (upField[0] and ButtonA) != 0,
+      intentText(intent) & ": a robot aimed up-field did not clear the ball"
+    # Facing the old aim -- the centre spot -- it does not.
+    sim.robots[0].headingQ = toCentre * 16
+    let atCentre = sim.compileMasks(sim.activeDirective)
+    doAssert (atCentre[0] and ButtonA) == 0,
+      intentText(intent) & ": the kick still aims at the centre spot"
+  report "hold and press clear the ball up-field, not at the centre spot"
+
 proc boardsOverride() =
   ## The boards-escape rule fires inside the band, does NOT fire inside the
   ## goal-mouth corridor, and aims the kick within 32 brads of the escape
@@ -234,6 +293,7 @@ when isMainModule:
   pureFunction()
   kickNeverIsHonoured()
   cooldownRespected()
+  clearingKicksAimUpField()
   boardsOverride()
   cornerIsEscaped()
   holdFacesTheBall()
