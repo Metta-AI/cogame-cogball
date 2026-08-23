@@ -150,6 +150,15 @@ proc placeRobot(sim: var SimServer, index: int, x, y: int32) =
 proc kickoffReset*(sim: var SimServer, restartSeat: int32) =
   ## The exact kickoff placement (docs/RULES.md §Kickoff). The restarting seat
   ## is the conceding one; at match start it is `config.seed and 1`.
+  ##
+  ## This runs TWICE before a match's first played tick: once from
+  ## `initSimServer` (the bodies have to be somewhere while the lobby fills)
+  ## and once from `startGame`. So the placement a match kicks off from is the
+  ## SECOND set of jitter draws. Determinism is unaffected -- the viewer
+  ## reconstructs with `initSimServer(config)` and re-steps from tick 0, so
+  ## both draws happen in the same order on both sides of the native/wasm
+  ## boundary -- and tests/test_physics.nim pins the resulting coordinates
+  ## against the seed. See docs/plans/note-divergences.md.
   sim.restartSeat = restartSeat
   sim.ball = Ball(x: CentreX, y: CentreY, vx: 0, vy: 0)
   sim.stalemateTicks = 0

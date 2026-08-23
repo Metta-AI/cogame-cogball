@@ -117,3 +117,30 @@ the kickoff reset that precedes every freeze puts the ball on the centre spot
 at rest — so the branch is a belt-and-braces invariant rather than a behaviour,
 and it holds even if some future restart forgets to zero the ball. It is inside
 the hashed step, so the viewer re-derives it identically.
+
+---
+
+## The jitter stream is drawn twice before the first played tick
+
+**Note** (§Kickoff reset): "Each of the four flank robots gets a deterministic
+y jitter of `sim.rng.rand(500_000) − 250_000`". It does not describe a second
+draw.
+
+**Code**: `kickoffReset` draws four values from the seeded sim RNG, and it runs
+**twice** before a match starts — once at construction (`initSimServer`, which
+must leave the bodies somewhere while the lobby fills) and once at `startGame`.
+The placement a match actually kicks off from is the **second** draw set.
+
+**Why it is harmless, and why it stays.** Determinism is unaffected, which is
+the only property that matters here: the viewer reconstructs with
+`initSimServer(config)` and re-steps from tick 0, so both draws happen in the
+same order on both sides of the native/wasm boundary, and
+`tests/test_physics.nim` pins the resulting coordinates against the seed.
+Removing the construction-time reset would leave every body at (0, 0) through
+the lobby, which the board would draw; skipping the RNG in it would make
+`kickoffReset` two functions. Neither is worth a change to a hashed code path.
+
+The one thing it did affect is now fixed: `initSimServer` clears
+`lastKickoffTick` after the construction-time reset, so the placement that
+happens before the match exists does not count as a kickoff for the broadcast
+beat list.
