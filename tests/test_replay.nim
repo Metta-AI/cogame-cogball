@@ -3,7 +3,7 @@
 ## the re-simulation and its hash chain, and `tools/replay_summary.py` under a
 ## STRICT UTF-8 JSON parser.
 
-import std/[json, os, osproc, strutils, unicode]
+import std/[json, os, osproc, strutils, tables, unicode]
 import lib/helpers
 import cogball/[broadcast, replays, replay_runtime]
 
@@ -214,9 +214,21 @@ proc run() =
   var player = initReplayPlayer(data)
   player.mismatchQuit = true
   var checked = 0
+  # Count the derived broadcast events off the RE-SIMULATION, which is where
+  # `kick` and `shot` actually live: they are not chat records, so counting
+  # them out of the record stream is impossible and counting them out of
+  # `sim.stats` only re-reads the recording's own tally. This is the stream a
+  # spectator sees.
+  var tracker = initBroadcastTracker()
+  tracker.resync(sim)
+  var derived: CountTable[string]
   while player.hashIndex < data.hashes.len and
       sim.tickCount < player.replayMaxTick():
     player.stepReplay(sim)
+    let events = newJArray()
+    sim.stepEvents(tracker, events)
+    for event in events:
+      derived.inc(event{"k"}.getStr())
     inc checked
   doAssert player.hashMismatchTick == -1,
     "the re-simulation diverged at tick " & $player.hashMismatchTick
@@ -251,12 +263,25 @@ proc run() =
   for seat in Seat:
     doAssert directivesBySeat[seat] >= 9,
       "only " & $directivesBySeat[seat] & " directives for " & seatAlias(seat)
-  doAssert recorded.sim.stats[Azure].kicks + recorded.sim.stats[Crimson].kicks > 0
-  kicks = int(recorded.sim.stats[Azure].kicks)
-  shots = int(recorded.sim.stats[Azure].shots + recorded.sim.stats[Crimson].shots)
-  doAssert kicks > 0, "no kick happened in a whole episode"
-  doAssert shots > 0, "no shot happened in a whole episode"
-  report "the record stream carries a directive per seat per turn and one result"
+  kicks = derived.getOrDefault("kick")
+  shots = derived.getOrDefault("shot")
+  doAssert kicks > 0,
+    "the re-derived event stream carries no `kick` in a whole episode"
+  doAssert shots > 0,
+    "the re-derived event stream carries no `shot` in a whole episode"
+  doAssert derived.getOrDefault("kickoff") >= 1,
+    "the re-derived event stream carries no `kickoff`"
+  # ...and the derived stream agrees with the recording's own tally, which is
+  # the point of deriving it: the same events, from the masks, not from a
+  # parallel recording.
+  doAssert kicks == int(recorded.sim.stats[Azure].kicks +
+      recorded.sim.stats[Crimson].kicks),
+    "the derived kick count (" & $kicks & ") disagrees with the recording"
+  doAssert shots == int(recorded.sim.stats[Azure].shots +
+      recorded.sim.stats[Crimson].shots),
+    "the derived shot count (" & $shots & ") disagrees with the recording"
+  report "the re-derived stream carries " & $kicks & " kicks and " & $shots &
+    " shots, and the records a directive per seat per turn plus one result"
 
   # ---- the broadcast feed reads the records back ---------------------------
   var feedSim = initSimServer(initialized.config)
