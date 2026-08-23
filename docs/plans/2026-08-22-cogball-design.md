@@ -1,4 +1,14 @@
-# cogball — design note (2026-08-22)
+# cogball — design note (2026-08-22) — SUPERSEDED, HISTORICAL
+
+> **SUPERSEDED.** This is the round-1 note. It is **not** the design this repo implements and
+> nothing here should be read as current. The operator (daveey) overruled its starter choice on
+> 2026-08-22 — "use coworld-ctf (paintbot) as the starter for Cogball, NOT cogame-moba" — and the
+> accepted note is **[`2026-08-22-cogball-design-v2.md`](2026-08-22-cogball-design-v2.md)**
+> (paintbot lineage: Nim, integer fixed-point physics, the binary `COWLDBAL` replay, the wasm
+> static viewer). This file is kept only as the record of what round 1 decided and why, because
+> the v2 note inherits its already-settled **game** decisions (pitch geometry, kick model, scoring
+> formula, end conditions, directive schema, champion prompts, baseline algorithms). Wherever the
+> two disagree, **v2 wins.** See commit `433da18` for the switch.
 
 `Metta-AI/cogame-cogball`, a 3v3 robot-soccer Coworld in a continuous 2D physics world. It is
 forked from **`Metta-AI/cogame-moba`** (mounted read-only at `/workspace/starters/cogame-moba`):
