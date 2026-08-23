@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# Replay-viewer bundle build hook for `coworld build`.
-#
-# coworld.bundle._build_replay_viewer_bundle invokes this with one argument:
-# the absolute bundle output directory (named after
-# game.replay_viewer.bundle, "static-replay-viewer"). It must produce
-# index.html there. We reuse the Dockerfile's wasm-builder stage (hot cache
-# right after `coworld build`'s compose build) and copy out viewer/dist --
-# the same five files the game image serves at /client/replay.
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,9 +14,6 @@ if [[ "${requested_output}" != /* || "$(basename "${requested_output}")" != "sta
   exit 1
 fi
 
-# `coworld build` creates the parent before invoking the hook; CI calls the
-# hook directly, so create it here too rather than failing on the cd.
-mkdir -p "$(dirname "${requested_output}")"
 output_parent="$(cd "$(dirname "${requested_output}")" && pwd -P)"
 output_dir="${output_parent}/static-replay-viewer"
 if [[ "${output_dir}" != "${repo_dir}"/* || -L "${output_dir}" ]]; then
@@ -35,7 +24,7 @@ fi
 rm -rf "${output_dir}"
 mkdir -p "${output_dir}"
 
-image_tag="cogball-viewer-build:$$"
+image_tag="coworld-cogball-replay-viewer-build:$$"
 container_id=""
 cleanup() {
   if [[ -n "${container_id}" ]]; then
@@ -45,14 +34,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The wasm-builder stage runs on $BUILDPLATFORM (wasm output is architecture
-# independent), so no --platform pin here.
-docker build \
-  --file "${repo_dir}/Dockerfile" \
-  --target wasm-builder \
-  --tag "${image_tag}" \
+build_args=(
+  --platform linux/amd64
+  --file "${repo_dir}/Dockerfile.replay-viewer"
+  --target replay-viewer-builder
+  --tag "${image_tag}"
   "${repo_dir}"
-container_id="$(docker create "${image_tag}")"
-docker cp "${container_id}:/src/viewer/dist/." "${output_dir}"
+)
+if docker buildx version >/dev/null 2>&1; then
+  docker buildx build --load "${build_args[@]}"
+else
+  # Docker Desktop installations without the buildx plugin still honor the
+  # explicit amd64 platform through their Linux VM. CI installs Buildx above.
+  docker build "${build_args[@]}"
+fi
+container_id="$(docker create --platform linux/amd64 "${image_tag}")"
+docker cp "${container_id}:/workspace/cogball/replay-viewer/dist/." "${output_dir}"
 
 test -f "${output_dir}/index.html"
