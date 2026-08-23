@@ -351,7 +351,15 @@ proc turn*(
       var cause = ""
       var detail = reply.error
       if not reply.ok:
-        cause = if reply.error.contains("imeout"): "timeout" else: "transport_error"
+        # curl words its deadline several ways ("Timeout was reached",
+        # "Operation timed out after ...", "Connection timed out"), so match on
+        # the lowercased text and on both spellings. Either label is legal in
+        # the cause enum; the point is that a deadline reads as a deadline in
+        # the record phase 60 counts.
+        let text = reply.error.toLowerAscii()
+        cause =
+          if text.contains("timeout") or text.contains("timed out"): "timeout"
+          else: "transport_error"
       else:
         try:
           let payload = extractJsonObject(reply.text)

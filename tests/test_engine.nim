@@ -138,6 +138,38 @@ proc exactlyOneRetry() =
   doAssert causes == 4, "expected two attempts x two seats, saw " & $causes
   report "one timeout buys exactly one retry; two failures fall back"
 
+proc transportErrorsAreLabelledByCause() =
+  ## The cause label is read off the transport's error text, and curl words its
+  ## deadline several ways. Every spelling must land on `timeout`; anything
+  ## else is `transport_error`. Both are legal in the enum, but phase 60 reads
+  ## these strings, so a deadline must not read as a connection failure.
+  for (text, want) in [("Timeout was reached", "timeout"),
+                       ("Operation timed out after 6001 milliseconds",
+                        "timeout"),
+                       ("Connection timed out", "timeout"),
+                       ("Could not resolve host: api.anthropic.com",
+                        "transport_error"),
+                       ("", "transport_error")]:
+    var sim = playing(testConfig())
+    var engine = newTurnEngine(nil,
+      proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+          {.closure, gcsafe.} =
+        for call in calls:
+          result.add BatchReply(seat: call.seat, error: text))
+    engine.llmSeats()
+    engine.turn(sim, 5, 0)
+    var seen = 0
+    for record in engine.records:
+      let node = parseJson(record)
+      if node{"k"}.getStr() != "fallback":
+        continue
+      inc seen
+      doAssert node{"cause"}.getStr() == want,
+        "`" & text & "` was labelled " & node{"cause"}.getStr() &
+          ", expected " & want
+    doAssert seen == 4, "expected two attempts x two seats, saw " & $seen
+  report "every curl deadline spelling is recorded as cause `timeout`"
+
 proc budgetGuardFires() =
   ## The guard switches the LLM off for the rest of the match, so the episode
   ## ends complete/full_time rather than deadline.
@@ -280,6 +312,7 @@ when isMainModule:
   oneParallelBatch()
   exactlyOneRetry()
   perTurnBudgetIsEnforced()
+  transportErrorsAreLabelledByCause()
   budgetGuardFires()
   noCredentialsFallsBackInstantly()
   scriptedSeatsNeverCallOut()
