@@ -132,7 +132,7 @@ def parse(raw):
     inputs = 0
     last_tick = -1
     ticks = 0
-    chain = 1469598103934665603      # FNV-1a offset basis, 64-bit
+    chain = 14695981039346656037     # FNV-1a offset basis, 64-bit
     while reader.at < len(data):
         kind = reader.u8()
         if kind == REC_HASH:
