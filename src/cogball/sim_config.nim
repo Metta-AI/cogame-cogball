@@ -143,7 +143,6 @@ proc update*(config: var GameConfig, configJson: string) =
   node.readInt("seed", config.seed)
   node.readInt("speed", config.speed)
   node.readInt("num_agents", config.numAgents)
-  node.readInt("numAgents", config.numAgents)
   node.readInt("minPlayers", config.minPlayers)
   node.readInt("startWaitTicks", config.startWaitTicks)
   node.readInt("lobbyJoinTimeoutTicks", config.lobbyJoinTimeoutTicks)

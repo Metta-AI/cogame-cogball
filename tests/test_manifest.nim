@@ -99,7 +99,9 @@ proc resultsSchemaMatchesTheCode() =
 
 proc configSchemaCoversWhatTheCodeReads() =
   ## Every field `sim_config.update` reads must be declared, or a variant that
-  ## sets it is rejected by the certifier.
+  ## sets it is rejected by the certifier. The check carries NO allow-list: an
+  ## undeclared key is unreachable through a validated config (config_schema is
+  ## `additionalProperties: false`), so a reader for one is dead code.
   let declared = manifest["game"]["config_schema"]["properties"]
   let source = readFile("src/cogball/sim_config.nim")
   var missing: seq[string]
@@ -109,7 +111,7 @@ proc configSchemaCoversWhatTheCodeReads() =
       if trimmed.startsWith(reader):
         let rest = trimmed[reader.len .. ^1]
         let key = rest[0 ..< rest.find('"')]
-        if not declared.hasKey(key) and key notin ["numAgents"]:
+        if not declared.hasKey(key):
           missing.add(key)
   doAssert missing.len == 0,
     "config_schema does not declare: " & missing.join(", ")
