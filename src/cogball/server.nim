@@ -374,7 +374,7 @@ proc declarePlayerFailure*(slot: int, message: string) =
   except CatchableError as e:
     echo "player-failure declaration failed: ", e.msg
 
-proc parseRegistration(text: string): tuple[ok: bool, node: JsonNode] =
+proc parseRegistration*(text: string): tuple[ok: bool, node: JsonNode] =
   try:
     let node = parseJson(text)
     if node.kind == JObject and node{"type"}.getStr() == "register":
@@ -382,6 +382,58 @@ proc parseRegistration(text: string): tuple[ok: bool, node: JsonNode] =
   except CatchableError:
     discard
   (false, newJNull())
+
+proc registrationOf*(
+  text: string,
+  seat: Seat,
+  previous: SeatPolicy
+): tuple[ok: bool, policy: SeatPolicy, record: string] =
+  ## EDIT 3, as a pure function: one chat payload from a seat becomes a policy
+  ## and, when it CHANGES that seat's policy, the redacted `register` record
+  ## the replay carries. Nothing here echoes the payload -- the prompt is read
+  ## into the policy and never into the record -- and any text that is not a
+  ## registration object is dropped (`ok` false, no record).
+  ##
+  ## Exported so tests/test_server.nim can assert the contract on the SAME code
+  ## the loop runs, instead of re-implementing the predicate beside it.
+  let parsed = parseRegistration(text)
+  if not parsed.ok:
+    return (false, previous, "")
+  var policy = SeatPolicy(connected: true)
+  let prompt = clipRunes(parsed.node{"prompt"}.getStr(), MaxPromptRunes)
+  let scripted = parsed.node{"scripted"}
+  let label = clipRunes(parsed.node{"policy"}.getStr(), MaxPolicyRunes)
+  if prompt.len > 0:
+    policy.kind = pkLlm
+    policy.prompt = prompt
+    policy.baseline = ""
+  else:
+    policy.kind = pkScripted
+    policy.baseline =
+      if scripted.kind == JString and scripted.getStr().len > 0:
+        scripted.getStr()
+      else:
+        "formation"
+  policy.label = if label.len > 0: label else: policyKindText(policy.kind)
+  # The player re-sends its registration once after the first frame (in case
+  # the first send raced the slot registration), so only an ACTUAL change earns
+  # a second record.
+  let unchanged =
+    previous.connected and
+    previous.kind == policy.kind and
+    previous.baseline == policy.baseline and
+    previous.label == policy.label and
+    previous.prompt == policy.prompt
+  if unchanged:
+    return (true, policy, "")
+  (true, policy, $(%*{
+    "k": "register",
+    "seat": ord(seat),
+    "alias": seatAlias(seat),
+    "policy": policy.label,
+    "kind": policyKindText(policy.kind),
+    "baseline": policy.baseline
+  }))
 
 proc runServerLoop*(
   host = DefaultHost,
@@ -601,54 +653,23 @@ proc runServerLoop*(
             appState.globalViewers[websocket].replaySeekTick = -1
 
       # EDIT 3: registration is consumed here and NEVER written to the replay
-      # chat stream. The redacted `register` record is written instead.
+      # chat stream. `registrationOf` returns the redacted `register` record
+      # instead, and returns nothing at all for any other chat text.
       for entry in registrations:
-        let parsed = parseRegistration(entry.text)
-        if not parsed.ok:
-          continue                     ## any other chat text is dropped.
         let seat = Seat(entry.seat and 1)
-        var policy = SeatPolicy(connected: true)
-        let prompt = clipRunes(parsed.node{"prompt"}.getStr(), MaxPromptRunes)
-        let scripted = parsed.node{"scripted"}
-        let label = clipRunes(parsed.node{"policy"}.getStr(), MaxPolicyRunes)
-        if prompt.len > 0:
-          policy.kind = pkLlm
-          policy.prompt = prompt
-          policy.baseline = ""
-        else:
-          policy.kind = pkScripted
-          policy.baseline =
-            if scripted.kind == JString and scripted.getStr().len > 0:
-              scripted.getStr()
-            else:
-              "formation"
-        policy.label = if label.len > 0: label else: policyKindText(policy.kind)
-        # The player re-sends its registration once after the first frame (in
-        # case the first send raced the slot registration), so only an ACTUAL
-        # change earns a second record.
-        let unchanged =
-          engine.policies[seat].connected and
-          engine.policies[seat].kind == policy.kind and
-          engine.policies[seat].baseline == policy.baseline and
-          engine.policies[seat].label == policy.label and
-          engine.policies[seat].prompt == policy.prompt
-        engine.policies[seat] = policy
-        if unchanged:
-          continue
+        let reg = registrationOf(entry.text, seat, engine.policies[seat])
+        if not reg.ok:
+          continue                     ## any other chat text is dropped.
+        engine.policies[seat] = reg.policy
+        if reg.record.len == 0:
+          continue                     ## an unchanged re-send earns no record.
         let index = sim.playerFor(seat)
         if index >= 0:
-          sim.players[index].policyKind = policy.kind
-          sim.players[index].baseline = policy.baseline
-          sim.players[index].policyLabel = policy.label
+          sim.players[index].policyKind = reg.policy.kind
+          sim.players[index].baseline = reg.policy.baseline
+          sim.players[index].policyLabel = reg.policy.label
           sim.players[index].registered = true
-        recordAndWrite($(%*{
-          "k": "register",
-          "seat": ord(seat),
-          "alias": seatAlias(seat),
-          "policy": policy.label,
-          "kind": policyKindText(policy.kind),
-          "baseline": policy.baseline
-        }))
+        recordAndWrite(reg.record)
 
       # A seat that never connects does NOT end the episode: the no-show is
       # declared, its trio plays the `formation` baseline, and the match runs to

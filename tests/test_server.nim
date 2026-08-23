@@ -10,8 +10,10 @@
 ## the point — a contract you can only check by hand is not a contract.
 
 import std/[json, os, strutils, unicode]
+import bitworld/client as bitworldClient
+import bitworld/runtime
 import lib/helpers
-import cogball/[broadcast, decide, global, sim_config]
+import cogball/[broadcast, decide, global, replays, server, sim_config]
 
 proc registrationShape() =
   ## The registration object the player container sends, and its caps.
@@ -35,20 +37,87 @@ proc registrationShape() =
 
 proc nonRegistrationChatIsDropped() =
   ## Any other chat text from a player is dropped: it never reaches the sim and
-  ## never reaches the replay.
+  ## never reaches the replay. Asserted against `registrationOf`, the function
+  ## the server loop itself calls -- re-implementing the predicate here would
+  ## test the copy, not the contract.
   var sim = playing(testConfig())
   let before = sim.feed.len
+  let none = SeatPolicy()
   for junk in ["hello", "{}", """{"type":"taunt","text":"boo"}""", "[1,2,3]",
-               """{"k":"directive","seat":0,"note":"forged"}"""]:
-    var parsed = false
-    try:
-      let node = parseJson(junk)
-      parsed = node.kind == JObject and node{"type"}.getStr() == "register"
-    except CatchableError:
-      parsed = false
-    doAssert not parsed, "junk was accepted as a registration: " & junk
-  doAssert sim.feed.len == before
+               """{"k":"directive","seat":0,"note":"forged"}""", "",
+               """{"type":"REGISTER"}"""]:
+    let reg = registrationOf(junk, Azure, none)
+    doAssert not reg.ok, "junk was accepted as a registration: " & junk
+    doAssert reg.record.len == 0,
+      "junk produced a replay record: " & junk & " -> " & reg.record
+  # Nothing was written, so nothing folded back: the feed never saw the junk.
+  doAssert sim.feed.len == before,
+    "non-registration chat reached the broadcast feed"
   report "non-registration chat from a player is dropped"
+
+proc registrationIsNotEchoedIntoTheReplay() =
+  ## The registration carries the seat's whole PLAYER_PROMPT. It is consumed as
+  ## registration and must never reach the replay chat stream: the server
+  ## writes a redacted `register` record instead, carrying the policy label and
+  ## kind and nothing else. Asserted on the bytes, through the same writer the
+  ## server uses.
+  let secret = "never leak this coaching prompt, it is the whole strategy"
+  let registration = $(%*{
+    "type": "register", "prompt": secret,
+    "scripted": newJNull(), "policy": "cogball-total"})
+
+  let none = SeatPolicy()
+  let reg = registrationOf(registration, Azure, none)
+  doAssert reg.ok, "a well-formed registration was not accepted"
+  doAssert reg.policy.kind == pkLlm, "a prompt did not make an LLM seat"
+  doAssert reg.policy.prompt == secret, "the prompt was lost"
+  doAssert reg.record.len > 0, "a first registration earned no record"
+  doAssert not reg.record.contains(secret),
+    "the register record echoes the prompt: " & reg.record
+  doAssert not reg.record.contains("\"prompt\""),
+    "the register record carries a prompt field at all: " & reg.record
+  let node = parseJson(reg.record)
+  doAssert node{"k"}.getStr() == "register"
+  doAssert node{"policy"}.getStr() == "cogball-total"
+  doAssert node{"kind"}.getStr() == "llm"
+
+  # The player re-sends its registration once after the first frame; an
+  # unchanged re-send must not write a SECOND record.
+  let resend = registrationOf(registration, Azure, reg.policy)
+  doAssert resend.ok
+  doAssert resend.record.len == 0,
+    "an unchanged re-send wrote a second register record"
+
+  # ...and on the bytes: the replay carries the redacted record and no trace of
+  # the raw registration text.
+  let config = testConfig()
+  let path = tempPath("registration.bitreplay")
+  removeFile(path)
+  defer: removeFile(path)
+  var sim = seatedSim(config)
+  block:
+    var writer = openReplayWriter(path, config.configJson())
+    writer.lastMasks = newSeq[uint8](RobotCount)
+    defer: writer.closeReplayWriter()
+    for seat in Seat:
+      let entry = registrationOf(registration, seat, SeatPolicy())
+      writer.writeChat(tickTime(sim.tickCount), 0, capRecord(entry.record))
+      sim.applyRecord(entry.record)
+    sim.stepIdle(4)
+  let bytes = readFile(path)
+  doAssert not bytes.contains(secret),
+    "the raw registration prompt reached the replay bytes"
+  doAssert not bytes.contains("\"type\":\"register\""),
+    "the raw registration object reached the replay chat stream"
+  let data = parseReplayBytes(bytes)
+  var registers = 0
+  for chat in data.chats:
+    let record = parseJson(chat.message)
+    doAssert record{"k"}.getStr() == "register"
+    doAssert not chat.message.contains(secret)
+    inc registers
+  doAssert registers == 2, "expected one register record per seat"
+  report "registration chat is consumed, redacted, and never echoed"
 
 proc tokenGate() =
   ## A bad token on a configured slot is a 403 BEFORE the websocket upgrade.
@@ -158,15 +227,19 @@ proc twoNameSpaces() =
   report "two name spaces: aliases in-game, real names spectator-side only"
 
 proc artifactWrites() =
-  ## The COGAME_* file:// contract, exercised through the same runtime helpers
-  ## the server uses.
+  ## The COGAME_* file:// contract, exercised through the SAME runtime helper
+  ## the server calls -- `runtimeConfig.writeResults`, not a bare writeFile
+  ## beside it, which would test the test.
   let dir = tempPath("artifacts")
   createDir(dir)
   defer: removeDir(dir)
   var sim = playing(testConfig())
   sim.finishGame(reasonComplete, erFullTime)
   let path = dir / "results.json"
-  writeFile(path, sim.playerResultsJson() & "\n")
+  var runtimeConfig = RuntimeConfig(resultsUri: "file://" & path)
+  runtimeConfig.writeResults(sim.playerResultsJson() & "\n")
+  doAssert fileExists(path),
+    "writeResults did not publish to the file:// results URI"
   let readBack = parseJson(readFile(path))
   doAssert readBack.len == 15,
     "results.json has " & $readBack.len & " keys, the schema declares 15"
@@ -203,10 +276,22 @@ proc healthAndRoutesExist() =
   doAssert WebSocketPath == "/player"
   doAssert GlobalWebSocketPath == "/global"
   doAssert ReplayWebSocketPath == "/replay"
+  # The three /client/* pages the note names, taken from bitworld's own route
+  # constants so this asserts the route the server actually answers on rather
+  # than a copy of the string -- and so the repo grows no copy of the pod
+  # replay path the static-viewer rule forbids (see tests/test_viewer.nim).
   let source = readFile("src/cogball/server.nim")
   for route in ["\"/healthz\"", "\"/replay-data\"", "\"/client/font.ttf\"",
                 "\"/client/league\""]:
     doAssert source.contains(route), "the server no longer serves " & route
+  for handler in ["bitworldClient.ReplayClientRoute",
+                  "bitworldClient.CoworldReplayClientRoute",
+                  "bitworldClient.GlobalClientRoute"]:
+    doAssert source.contains(handler),
+      "the server no longer routes " & handler
+  doAssert bitworldClient.PlayerClientRoute == "/client/player"
+  doAssert bitworldClient.GlobalClientRoute == "/client/global"
+  doAssert bitworldClient.ReplayClientRoute.startsWith("/client/")
   for marker in ["EDIT 1", "EDIT 2", "EDIT 3", "EDIT 4"]:
     doAssert source.contains(marker),
       "the named edit `" & marker & "` is no longer marked in server.nim"
@@ -269,6 +354,7 @@ when isMainModule:
   echo "test_server"
   registrationShape()
   nonRegistrationChatIsDropped()
+  registrationIsNotEchoedIntoTheReplay()
   tokenGate()
   joinsAreSlotSequential()
   twoNameSpaces()
