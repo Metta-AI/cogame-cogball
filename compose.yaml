@@ -1,0 +1,20 @@
+# Compose services consumed by `coworld build --project .`: service names map
+# to the manifest image placeholders ({{GAME_IMAGE}}, {{PLAYER_IMAGE}}). The
+# game and the player ship in ONE image (a single Dockerfile) and the manifest
+# `run` command selects the role, so both services carry the SAME image name --
+# which is also the single <IMAGE> the CI scaffold substitutes.
+services:
+  game:
+    image: coworld-cogball:latest
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+  player:
+    image: coworld-cogball:latest
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host

@@ -1,0 +1,10 @@
+.git
+.github
+.venv
+build
+dist
+viewer/dist
+tests
+docs
+**/__pycache__
+*.pyc
