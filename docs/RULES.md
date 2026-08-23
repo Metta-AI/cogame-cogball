@@ -31,6 +31,7 @@ Y ∈ [−12.5, +12.5].
 | world box | 44 m × 25 m |
 | playing surface | 40 m × 25 m (x ∈ [2 m, 42 m]) |
 | goal mouths | the planes x = 2 m and x = 42 m, y ∈ [9 m, 16 m] (7 m wide) |
+| realised mouth for the ball | ~6.3 m: the goal test is on the ball CENTRE against the full 7 m band, but the posts (r = 0.12 m) and the goal-line aperture both hold a ball of radius 0.35 m off the last third of a metre at each edge |
 | goal boxes | 2 m deep behind each mouth, closed on all sides |
 | goalposts | static circles, r = 0.12 m, at the four mouth corners |
 | penalty areas | Azure: x ≤ 8 m and \|y − 12.5 m\| ≤ 7 m; Crimson mirrored |
