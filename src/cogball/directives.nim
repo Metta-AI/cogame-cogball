@@ -155,9 +155,57 @@ proc directiveJson*(sim: SimServer, seat: Seat, directive: Directive): JsonNode 
     "robots": robots
   }
 
+proc clipJsonStrings(node: JsonNode, budget: int): JsonNode =
+  ## A copy of `node` with every STRING VALUE clipped to `budget` runes. Keys
+  ## are untouched, so the shape a reader matches on survives.
+  case node.kind
+  of JString:
+    result = %clipRunes(node.getStr(), budget)
+  of JArray:
+    result = newJArray()
+    for item in node:
+      result.add(clipJsonStrings(item, budget))
+  of JObject:
+    result = newJObject()
+    for key, value in node:
+      result[key] = clipJsonStrings(value, budget)
+  else:
+    result = node
+
 proc capRecord*(text: string): string =
   ## Every replay chat record is capped at MaxDirectiveRecordRunes runes, on a
   ## rune boundary. ctf's 10-character shout cap is deliberately raised here.
+  ##
+  ## The cap is on the SERIALIZED record, and JSON escaping is what makes that
+  ## non-obvious: a `"` or a `\` inside a note or a say costs two runes on the
+  ## wire, so a directive whose note and three says are all legal at their own
+  ## caps (160 + 3x48 runes) serializes to 1053 runes when every one of those
+  ## characters escapes. Blindly clipping the serialized text at 900 would then
+  ## cut the object mid-key: still valid UTF-8 on a rune boundary, but no
+  ## longer JSON. `broadcast.applyRecord` would silently drop the feed line and
+  ## `tools/replay_summary.py` would skip the record, so phase 60 would
+  ## under-count exactly the LLM directives it is there to verify.
+  ##
+  ## So an over-long record is shrunk STRUCTURALLY: parse it, clip its string
+  ## values to a halving budget until the serialization fits, and only fall
+  ## back to the blind rune clip when the text is not a JSON object at all.
+  ## The result is always parseable, and a record already inside the cap is
+  ## returned byte for byte.
+  if text.runeLen <= MaxDirectiveRecordRunes:
+    return clipRunes(text, MaxDirectiveRecordRunes)
+  var node: JsonNode
+  try:
+    node = parseJson(text)
+  except CatchableError:
+    return clipRunes(text, MaxDirectiveRecordRunes)
+  if node.kind != JObject:
+    return clipRunes(text, MaxDirectiveRecordRunes)
+  var budget = MaxNoteRunes
+  while budget > 0:
+    budget = budget div 2
+    let shrunk = $clipJsonStrings(node, budget)
+    if shrunk.runeLen <= MaxDirectiveRecordRunes:
+      return shrunk
   clipRunes(text, MaxDirectiveRecordRunes)
 
 # --------------------------------------------------------------------------

@@ -6,7 +6,7 @@
 
 import std/[json, strutils, unicode]
 import lib/helpers
-import cogball/llm
+import cogball/[broadcast, llm]
 
 proc parseOf(
   sim: SimServer,
@@ -198,6 +198,59 @@ proc idParsing() =
     doAssert robotIndexOfId(robotId(i)) == i
   report "robot ids round-trip, case- and separator-tolerantly"
 
+proc capRecordStaysParseable() =
+  ## The record cap is on the SERIALIZED object, and JSON escaping is what
+  ## makes it bite: a `"` or a `\` in a note or a say costs two runes on the
+  ## wire. A note and three says that are each legal at their own caps
+  ## (160 + 3x48) but made entirely of quotes serialize past 900 runes, and a
+  ## blind clip there would cut the object mid-key. That record would still be
+  ## valid UTF-8 and still be dropped by every reader: broadcast.applyRecord
+  ## returns on a parse failure and tools/replay_summary.py skips the line, so
+  ## phase 60 would under-count the LLM directives it exists to verify.
+  var sim = playing(testConfig())
+  for quoteSaturated in ["\"", "\\"]:
+    var directive = sim.formationDirective(Azure, 39)
+    directive.source = dsLlm
+    directive.latencyMs = 12345
+    directive.note = clipRunes(repeat(quoteSaturated, MaxNoteRunes),
+      MaxNoteRunes)
+    for slot in 0 ..< RobotsPerSeat:
+      directive.robots[slot].say =
+        clipRunes(repeat(quoteSaturated, MaxSayRunes), MaxSayRunes)
+      directive.robots[slot].passTo =
+        int32(firstRobotOf(Azure) + ((slot + 1) mod RobotsPerSeat))
+    let raw = $directiveJson(sim, Azure, directive)
+    doAssert raw.runeLen > MaxDirectiveRecordRunes,
+      "the quote-saturated bound no longer exceeds the cap (" &
+        $raw.runeLen & " runes); this test is measuring nothing"
+    let capped = capRecord(raw)
+    doAssert capped.runeLen <= MaxDirectiveRecordRunes,
+      "capRecord returned " & $capped.runeLen & " runes"
+    doAssert isValidUtf8(capped), "capRecord cut a character in half"
+    # The assertion that matters: it is still a directive record a reader can
+    # use, not a truncated string that parses as nothing.
+    let node = parseJson(capped)
+    doAssert node{"k"}.getStr() == "directive"
+    doAssert node{"seat"}.getInt() == ord(Azure)
+    doAssert node{"source"}.getStr() == "llm"
+    doAssert node{"turn"}.getInt() == 39
+    doAssert node{"robots"}.len == RobotsPerSeat
+    doAssert node{"note"}.getStr().len > 0,
+      "the shrink threw the note away entirely"
+    for entry in node{"robots"}:
+      doAssert entry{"id"}.getStr().len == 4
+      doAssert entry{"intent"}.getStr().len > 0
+    # And the same record folds back into the broadcast feed.
+    var feedSim = playing(testConfig())
+    let before = feedSim.feed.len
+    feedSim.applyRecord(capped)
+    doAssert feedSim.feed.len > before,
+      "the capped record no longer reaches the broadcast feed"
+  # A record already inside the cap is returned unchanged.
+  let small = """{"k":"directive","turn":1,"seat":0,"note":"tidy"}"""
+  doAssert capRecord(small) == small
+  report "a quote-saturated directive record caps to parseable JSON"
+
 when isMainModule:
   echo "test_directives"
   idParsing()
@@ -209,5 +262,6 @@ when isMainModule:
   wrongRobotCounts()
   positionalAssignment()
   runeTruncation()
+  capRecordStaysParseable()
   noJsonAtAll()
   echo "test_directives: all good"
