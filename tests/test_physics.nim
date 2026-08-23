@@ -6,6 +6,18 @@
 import std/math
 import lib/helpers
 
+proc ballDrag(v: int32): int32 =
+  ## One substep of ball drag, mirroring sim.integrateBall's single line
+  ## (`v -= v * BallDragNum div 1024`, taken in int64 and truncated toward
+  ## zero). Spelled out here so the bounce and kick assertions below can be
+  ## EXACT instead of carrying a tolerance for "one substep of drag happened".
+  v - int32((int64(v) * int64(BallDragNum)) div 1024)
+
+proc robotDrag(v: int32): int32 =
+  ## The same for sim.integrateRobots' linear drag, for a robot with no thrust,
+  ## no turn and no lateral component (the kick-reaction case below).
+  v - int32((int64(v) * int64(RobotDragNum)) div 1024)
+
 proc noTunnelling() =
   ## A ball fired at BallMaxSpeed into a wall for 600 ticks never leaves the
   ## arena. Four substeps of 1/96 s move a 25 m/s ball at most 0.26 m — less
@@ -34,8 +46,12 @@ proc noTunnelling() =
   report "a max-speed ball never tunnels out of the arena"
 
 proc wallRestitution() =
-  ## The touchline reflects the normal component at 80 % and shaves the
-  ## tangential at 98 %, within the fixed-point quantum.
+  ## The touchline reflects the normal component at 80 %. Asserted EXACTLY, to
+  ## the fixed-point quantum: the tick is four substeps of
+  ## drag-then-integrate, the bounce lands in the substep the ball crosses the
+  ## line, and the remaining substeps are drag only. Every one of those steps
+  ## is reproduced here, so the assertion is equality and a one-unit change in
+  ## BallDragNum or BallWallRestitutionPct fails it.
   var sim = playing(testConfig())
   for i in 0 ..< RobotCount:
     sim.robots[i].x = CentreX
@@ -44,14 +60,29 @@ proc wallRestitution() =
   sim.ball.y = 500_000'i32
   sim.ball.vx = 0
   sim.ball.vy = -400_000'i32
-  let before = -sim.ball.vy
+
+  # Model the tick: y is above the floor at 500 000 um, the wall clamps the
+  # centre to BallRadius, and the bounce happens in whichever substep crosses.
+  var v = sim.ball.vy
+  var y = sim.ball.y
+  var bounced = false
+  for _ in 0 ..< Substeps:
+    v = ballDrag(v)
+    y += v div Substeps
+    if not bounced and y < BallRadius:
+      y = BallRadius
+      v = -int32((int64(v) * int64(BallWallRestitutionPct)) div 100)
+      bounced = true
+  doAssert bounced, "the model says the ball never reached the touchline"
+
   sim.stepIdle()
   doAssert sim.ball.vy > 0, "the ball did not bounce off the touchline"
-  # One integration substep of drag runs before the bounce, so allow for it.
-  let expected = int32((int64(before) * 80) div 100)
-  doAssert abs(sim.ball.vy - expected) <= expected div 8,
-    "wall bounce speed " & $sim.ball.vy & " is nowhere near " & $expected
-  report "wall restitution reproduces the analytic bounce"
+  doAssert sim.ball.vy == v,
+    "wall bounce speed " & $sim.ball.vy & " != the analytic " & $v
+  doAssert sim.ball.y == y,
+    "the ball rested at " & $sim.ball.y & " != the analytic " & $y
+  doAssert sim.ball.vx == 0, "a normal-only bounce moved the tangential axis"
+  report "wall restitution reproduces the analytic bounce exactly"
 
 proc robotPairSymmetry() =
   ## Robot-robot resolution is symmetric under swapping the indices and
@@ -105,16 +136,23 @@ proc kickModel() =
   sim.stepWith(masks)
   doAssert sim.robots[0].kickCooldown == KickCooldownTicks - 1,
     "the cooldown was not armed: " & $sim.robots[0].kickCooldown
-  # One tick of drag and one substep of ball integration follow the kick.
-  doAssert sim.ball.vx > int32(KickImpulse) * 9 div 10,
-    "the kick did not reach the impulse: " & $sim.ball.vx
-  doAssert sim.robots[0].vx < 0, "the robot took no reaction"
-  let expectedReaction = int32(
+  # The kick runs BEFORE the four substeps, so both bodies then take four
+  # substeps of drag and nothing else: the ball is clear of the robot (they are
+  # 1.0 m apart against a 0.9 m contact span, and the kick drives them apart)
+  # and neither reaches a wall. Both assertions are therefore EXACT.
+  var ball = int32(KickImpulse)
+  var reaction = -int32(
     (int64(BallMassG) * int64(KickImpulse)) div int64(RobotMassG))
-  doAssert abs(abs(sim.robots[0].vx) - expectedReaction) <=
-      expectedReaction div 3,
-    "the reaction is not the mass ratio: " & $sim.robots[0].vx &
-      " vs " & $expectedReaction
+  for _ in 0 ..< Substeps:
+    ball = ballDrag(ball)
+    reaction = robotDrag(reaction)
+  doAssert sim.ball.vx == ball,
+    "the kick gave the ball " & $sim.ball.vx & ", not the analytic " & $ball
+  doAssert sim.ball.vy == 0, "a head-on kick moved the ball off its axis"
+  doAssert sim.robots[0].vx == reaction,
+    "the reaction is " & $sim.robots[0].vx & ", not the mass-ratio " &
+      $reaction
+  doAssert reaction < 0, "the robot took no reaction"
   report "the kick applies the exact impulse and the mass-ratio reaction"
 
 proc kickArc() =
