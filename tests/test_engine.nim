@@ -232,6 +232,55 @@ proc budgetGuardFires() =
     doAssert sim.activeDirective[seat].source == dsFallback
   report "the budget guard fires once, sticks, and costs no network wait"
 
+proc budgetGuardStillEndsFullTime() =
+  ## The whole point of the guard: the match finishes on the scripted layer and
+  ## ends `complete/full_time` instead of running into the wall clock and
+  ## ending `deadline`. The guard test above stops at "it fired"; this one
+  ## plays the episode out.
+  var sim = playing(testConfig(maxTicks = 600))
+  var calls = 0
+  var engine = newTurnEngine(nil,
+    proc (batch: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+        {.closure, gcsafe.} =
+      {.cast(gcsafe).}:
+        inc calls
+      for call in batch:
+        result.add BatchReply(seat: call.seat, ok: true, text: GoodReply))
+  engine.llmSeats()
+  var prev = newSeq[InputState](RobotCount)
+  var guard = 0
+  var turns = 0
+  # 680 s elapsed against a 690 s budget: the guard fires on the first turn.
+  while sim.phase != GameOver and guard < sim.config.maxTicks * 3:
+    inc guard
+    if sim.phase == Playing:
+      let elapsed = sim.tickCount - sim.gameStartTick
+      if elapsed mod sim.turnTicks() == 0 or
+          not (sim.hasDirective[Azure] and sim.hasDirective[Crimson]):
+        engine.turn(sim, elapsed div sim.turnTicks(), 680)
+        inc turns
+    let masks = sim.compileMasks(sim.activeDirective)
+    var inputs = newSeq[InputState](RobotCount)
+    for i in 0 ..< RobotCount:
+      inputs[i] = decodeInputMask(masks[i])
+    sim.step(inputs, prev)
+    prev = inputs
+  doAssert engine.llmOff, "the budget guard never fired"
+  doAssert calls == 0, "the LLM was called after the guard switched it off"
+  doAssert turns >= 5, "only " & $turns & " turns ran"
+  doAssert sim.phase == GameOver
+  doAssert sim.endReason == reasonComplete,
+    "the guarded episode ended " & reasonText(sim.endReason) &
+      ", not complete"
+  doAssert sim.endRule == erFullTime,
+    "the guarded episode ended " & endRuleText(sim.endRule) &
+      ", not full_time"
+  for seat in Seat:
+    doAssert sim.stats[seat].fallbackTurns == int32(turns),
+      "the guarded seat did not play the scripted layer every turn"
+    doAssert sim.stats[seat].llmTurns == 0
+  report "a guarded match finishes on the scripted layer, complete/full_time"
+
 proc noCredentialsFallsBackInstantly() =
   ## With no client at all every turn falls back with NO network wait, which is
   ## what makes offline certification complete in seconds.
@@ -505,6 +554,7 @@ when isMainModule:
   transportErrorsAreLabelledByCause()
   attemptDeadlinesFitTheTurnBudget()
   budgetGuardFires()
+  budgetGuardStillEndsFullTime()
   noCredentialsFallsBackInstantly()
   rejectedCredentialsAreNotNoCredentials()
   scriptedSeatsNeverCallOut()
