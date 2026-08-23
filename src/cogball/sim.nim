@@ -93,6 +93,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.lastGoalSeat = -1
   result.lastGoalBy = -1
   result.lastGoalAssist = -1
+  result.lastDropTick = -1
   result.pendingShot = ShotRecord(seat: -1, robot: -1, tick: -1)
   result.pendingPass = PassRecord(seat: -1, robot: -1, tick: -1, target: -1)
   result.gameEventLoggingEnabled = true
@@ -199,6 +200,7 @@ proc neutralDrop(sim: var SimServer) =
   sim.prevTouch = Touch(robot: -1, seat: -1, tick: -1)
   sim.pendingShot = ShotRecord(seat: -1, robot: -1, tick: -1)
   sim.pendingPass = PassRecord(seat: -1, robot: -1, tick: -1, target: -1)
+  sim.lastDropTick = int32(sim.tickCount)
   sim.emitEvent(Drop, x = spot.x, y = spot.y)
   sim.logGameEvent("neutral drop at " & $spot.x & "," & $spot.y)
 

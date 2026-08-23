@@ -79,6 +79,73 @@ proc recordEpisode(path: string): tuple[hashes: seq[uint64], sim: SimServer] =
   sim.emit(writer, sim.resultRecordJson())
   result.sim = sim
 
+proc parkBall(sim: var SimServer, x, y: int32) =
+  ## The ball dead still with the stalemate box anchored on it, and every robot
+  ## parked far away along the far touchline so nothing touches it: the state
+  ## the neutral drop exists to break.
+  sim.ball = Ball(x: x, y: y, vx: 0, vy: 0)
+  sim.anchorX = x
+  sim.anchorY = y
+  sim.stalemateTicks = 0
+  for i in 0 ..< RobotCount:
+    sim.robots[i].x = int32(6_000_000 + i * 3_000_000)
+    sim.robots[i].y = 23_500_000'i32
+    sim.robots[i].vx = 0
+    sim.robots[i].vy = 0
+    sim.robots[i].spin = 0
+
+proc countBeats(sim: var SimServer, tracker: var BroadcastTracker,
+                kind: string, ticks: int): int =
+  for _ in 0 ..< ticks:
+    sim.stepIdle()
+    let events = newJArray()
+    sim.stepEvents(tracker, events)
+    for event in events:
+      if event{"k"}.getStr() == kind:
+        inc result
+
+proc dropBeatsMatchRealDrops() =
+  ## `drop` is a BEAT: a scrubber marker, and the trigger for the slow-mo
+  ## replay. It used to be inferred from a stalemate-counter transition ("was
+  ## at least 239, is now 0"), but the counter ALSO resets to 0 on the tick the
+  ## ball finally leaves the box -- so a ball that escaped on its own produced
+  ## a marker for a drop that never happened. The sim now records the drop and
+  ## the beat is derived from that.
+  let config = testConfig()
+
+  # (a) a real drop emits exactly one beat.
+  var dropped = playing(config)
+  dropped.gameEventLoggingEnabled = false
+  dropped.parkBall(5_000_000'i32, 5_000_000'i32)
+  var trackerA = initBroadcastTracker()
+  trackerA.resync(dropped)
+  let real = dropped.countBeats(trackerA, "drop", config.stalemateTicks + 5)
+  doAssert real == 1, "a real neutral drop emitted " & $real & " drop beats"
+  doAssert dropped.lastDropTick >= 0, "the sim did not record the drop"
+
+  # (b) a ball that LEAVES the box one tick short of the drop emits none. The
+  # ball cannot cross a 1.5 m half-box in a single tick from the anchor
+  # (BallMaxSpeed is 1.04 m/tick), so the escape is staged the way it happens
+  # in play: the ball has already drifted to the edge of the box when the
+  # counter reaches 239, and one more tick carries it out.
+  var escaped = playing(config)
+  escaped.gameEventLoggingEnabled = false
+  escaped.parkBall(CentreX, CentreY)
+  var trackerB = initBroadcastTracker()
+  trackerB.resync(escaped)
+  let before = escaped.countBeats(trackerB, "drop", config.stalemateTicks - 1)
+  doAssert before == 0
+  doAssert escaped.stalemateTicks == int32(config.stalemateTicks) - 1,
+    "the counter is at " & $escaped.stalemateTicks & ", not one short"
+  escaped.anchorX = escaped.ball.x - (StalemateBox - 100_000'i32)
+  escaped.ball.vx = 900_000'i32
+  let phantom = escaped.countBeats(trackerB, "drop", 1)
+  doAssert escaped.stalemateTicks == 0, "the ball did not leave the box"
+  doAssert escaped.lastDropTick < 0, "a drop actually fired"
+  doAssert phantom == 0,
+    "a ball that merely left the box emitted a phantom `drop` beat"
+  report "the drop beat fires on a real drop and never on a counter reset"
+
 proc writeInputFrameMasksShim() = discard
 
 proc run() =
@@ -226,5 +293,6 @@ proc run() =
 when isMainModule:
   echo "test_replay"
   writeInputFrameMasksShim()
+  dropBeatsMatchRealDrops()
   run()
   echo "test_replay: all good"

@@ -402,6 +402,11 @@ type
     lastGoalBy*: int32
     lastGoalAssist*: int32
     lastGoalSpeed*: int32
+    lastDropTick*: int32
+      ## The tick the last neutral drop fired on. Appended, never inserted:
+      ## SimServer is serialized POSITIONALLY into replay keyframes. Set inside
+      ## the hashed step so the viewer re-derives it identically, and not
+      ## hashed, exactly like the lastGoal* fields above.
 
   TrailPoint* = object
     x*, y*: int32

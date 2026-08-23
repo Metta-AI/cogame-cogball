@@ -29,6 +29,7 @@ type
     lastTouchRobot: int32
     lastTouchTick: int32
     lastGoalTick: int32
+    lastDropTick: int32
     posts: int
     stalemate: int32
     turn: int
@@ -37,6 +38,7 @@ proc initBroadcastTracker*(): BroadcastTracker =
   result.prevPhase = Lobby
   result.lastTouchRobot = -1
   result.lastGoalTick = -1
+  result.lastDropTick = -1
   result.turn = -1
 
 proc snapshot(tracker: var BroadcastTracker, sim: SimServer) =
@@ -51,6 +53,7 @@ proc snapshot(tracker: var BroadcastTracker, sim: SimServer) =
   tracker.lastTouchRobot = sim.lastTouch.robot
   tracker.lastTouchTick = sim.lastTouch.tick
   tracker.lastGoalTick = sim.lastGoalTick
+  tracker.lastDropTick = sim.lastDropTick
   tracker.stalemate = sim.stalemateTicks
   tracker.prevTick = sim.tickCount
   tracker.prevPhase = sim.phase
@@ -124,9 +127,12 @@ proc stepEvents*(
         "by": robotId(int(sim.lastTouch.robot)),
         "team": seatText(seatOfRobot(int(sim.lastTouch.robot)))})
 
-  if sim.stalemateTicks == 0 and tracker.stalemate >= 1 and
-      sim.stalemateTicks < tracker.stalemate and
-      tracker.stalemate >= int32(sim.config.stalemateTicks) - 1:
+  # The drop beat comes from the SIM's own record of the drop, not from a
+  # stalemate-counter transition: the counter also resets to 0 on the tick the
+  # ball leaves the box, so inferring the drop from "the counter was at 239 and
+  # is now 0" fired a phantom beat -- a scrubber marker, and a slow-mo trigger,
+  # for a drop that never happened.
+  if sim.lastDropTick >= 0 and sim.lastDropTick != tracker.lastDropTick:
     events.add(%*{"t": tick, "k": "drop"})
 
   if sim.phase == Playing and sim.currentTurn() != tracker.turn and
