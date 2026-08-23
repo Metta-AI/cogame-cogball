@@ -443,7 +443,7 @@ html, body {
 .clock.amb { animation: clocktick 2s ease-in-out infinite; }
 @keyframes clocktick { 0%,100% { opacity: 0.94; } 50% { opacity: 1; } }
 
-/* leader pulse when a team's lives lead is >=3 */
+/* leader pulse when a team's goal lead is >=3 */
 .plate.leader .lives-num { animation: leaderpulse 1.9s ease-in-out infinite; }
 @keyframes leaderpulse { 0%,100% { text-shadow: none; } 50% { text-shadow: 0 0 calc(10 * var(--u)) var(--amber); } }
 
@@ -1592,7 +1592,7 @@ body[data-noviewpanel] #viewpanel { display: none !important; }
              axis, so the playhead crosses it 1:1 with the timeline -->
         <svg class="momentum" id="momentum" viewBox="0 0 1000 100"
              preserveAspectRatio="none" aria-hidden="true"></svg>
-        <span class="momentum-label">LIVES LEAD</span>
+        <span class="momentum-label">GOAL LEAD</span>
         <div class="scrub-track"></div>
         <div class="scrub-fill" id="scrub-fill"></div>
         <!-- lull shading rides ABOVE track+fill so the quiet stretches read
@@ -2237,7 +2237,13 @@ body[data-noviewpanel] #viewpanel { display: none !important; }
   // ---------- kill feed queue (fixed reserve, dwell floor) ----------
   var feedEl = $('killfeed');
   var MAX_FEED = 4;
-  function pushFeed(row) {
+  // Callers hand over the row's HTML (a team chip plus a verb, or a coach
+  // note); the row ELEMENT is built here, so one place owns the .feed-row
+  // class and the animation contract below.
+  function pushFeed(html) {
+    var row = document.createElement('div');
+    row.className = 'feed-row';
+    row.innerHTML = html;
     feedEl.insertBefore(row, feedEl.firstChild);
     while (feedEl.children.length > MAX_FEED) feedEl.removeChild(feedEl.lastChild);
     // Dwell floor (lever 2): a wall-clock minimum so the row reads even at 16×.
