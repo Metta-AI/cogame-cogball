@@ -170,3 +170,30 @@ All four fields are inside `gameHash`, so this is part of the recorded,
 re-simulated truth the note requires the drop to be — it is simply more of it
 than the note lists. `kickoffReset` clears exactly the same set, for exactly
 the same reason.
+
+---
+
+## The robots are nano-banana cog sprites, not the rig_real segment rigs
+
+**Note** (§Viewer, and the asset table): "robots are the shipped
+`data/rig_real/blue` and `data/rig_real/red` wheeled rigs" composed by
+`rig_art.nim` from nine segments and rotated to the heading.
+
+**Code** (`src/cogball/rig_art.nim`, `data/art/cog_*.png`): each team is ONE
+Gemini ("nano-banana") render of the canonical Softmax cog in a football kit —
+Azure in a blue #7 jersey, headband and keeper gloves; Crimson in a red #9
+jersey, crested helmet with a white plume and shin guards. The sprite is drawn
+upright, 48 px tall at 1x, feet on the robot's position; the heading is a
+tick on a team-coloured ground ellipse under the wheels. `data/rig_real/` is
+deleted. The source sheet and the keying/splitting script are committed under
+`scripts/art/`.
+
+**Why.** The two rig_real liveries differed only by tint, so at board scale a
+spectator told the teams apart by colour alone and the robots themselves did
+not read as cogs. A kit per team (jersey number plate plus a large
+team-coloured accessory) makes the sides distinct even with colour
+discounted. Drawing the sprite upright instead of rotating it keeps the kit
+readable at every heading; the ground tick carries the heading the rotation
+used to. Nothing here touches the sim: the sprite is broadcast-only, outside
+`gameHash`, no `GameVersion` bump. The lockerroom art (`client/art/lockerroom`)
+is unchanged — it was already per-team character art, not a placeholder.
