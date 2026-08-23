@@ -5,7 +5,7 @@
 ## asserts the two windows INTERSECT. A sequential implementation would still
 ## produce legal directives and pass every other test in this suite.
 
-import std/[json, monotimes, os]
+import std/[json, monotimes, os, strutils]
 import lib/helpers
 import cogball/llm
 
@@ -339,6 +339,49 @@ proc mercyAndWallClock() =
   doAssert not faulted.seatWon(Azure) and not faulted.seatWon(Crimson)
   report "mercy, the wall-clock stop and the physics fault all resolve"
 
+proc hostErrorIsAReachableEnding() =
+  ## `fault/host_error` is declared in the results_schema's endRule enum and in
+  ## docs/RULES.md, and the note promises "best-effort artifacts written before
+  ## re-raising". hostErrorStop used to have no caller at all, so the ending was
+  ## unreachable and an unexpected exception unwound out of the entrypoint with
+  ## no results.json, no replay upload and no events file.
+  var sim = playing(testConfig())
+  sim.stepIdle(10)
+  sim.hostErrorStop()
+  doAssert sim.phase == GameOver
+  doAssert sim.endReason == reasonFault
+  doAssert sim.endRule == erHostError
+  doAssert endRuleText(sim.endRule) == "host_error"
+  doAssert sim.scorePermille(Azure) == 500
+  doAssert sim.scorePermille(Crimson) == 500
+  doAssert not sim.seatWon(Azure) and not sim.seatWon(Crimson)
+  let results = parseJson(sim.playerResultsJson())
+  doAssert results["reason"].getStr() == "fault"
+  doAssert results["endRule"].getStr() == "host_error"
+  # Idempotent, and it never overwrites a verdict the match already reached.
+  var finished = playing(testConfig())
+  finished.finishGame(reasonComplete, erFullTime)
+  finished.hostErrorStop()
+  doAssert finished.endRule == erFullTime,
+    "a host error overwrote a match that had already ended"
+
+  # ...and the server loop actually takes that path: the whole loop is wrapped,
+  # the verdict is recorded, the artifacts are written, and the exception is
+  # re-raised so the exit status still says what happened.
+  let source = readFile("src/cogball/server.nim")
+  for fragment in ["except CatchableError as failure:", "sim.hostErrorStop()",
+                   "recordAndWrite(sim.resultRecordJson())",
+                   "writeArtifacts()", "raise"]:
+    doAssert source.contains(fragment),
+      "the host-error path lost `" & fragment & "`"
+  let handler = source[source.find("except CatchableError as failure:") .. ^1]
+  doAssert handler.find("sim.hostErrorStop()") <
+    handler.find("writeArtifacts()"),
+    "the verdict must be set before the artifacts are written"
+  doAssert handler.find("writeArtifacts()") < handler.rfind("raise"),
+    "the artifacts must be written before the exception is re-raised"
+  report "fault/host_error is reachable and writes artifacts before re-raising"
+
 proc seatsAlwaysScoreToOne() =
   for a in 0 .. 6:
     for b in 0 .. 6:
@@ -394,6 +437,7 @@ when isMainModule:
   rejectedCredentialsAreNotNoCredentials()
   scriptedSeatsNeverCallOut()
   mercyAndWallClock()
+  hostErrorIsAReachableEnding()
   seatsAlwaysScoreToOne()
   disconnectKeepsPlaying()
   echo "test_engine: all good"

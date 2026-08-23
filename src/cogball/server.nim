@@ -22,6 +22,11 @@
 ## 4. **Wall-clock stop.** A `wallClockBudgetSeconds` check at the top of every
 ##    loop iteration forces `phase = GameOver`, `reason = deadline`,
 ##    `endRule = wall_clock`.
+##
+## The whole loop is wrapped so an unexpected exception becomes
+## `fault/host_error` with best-effort artifacts written before it is re-raised
+## (docs/RULES.md "End conditions"): the runner gets a results.json and a
+## partial replay instead of an unattributable episode.
 
 import
   std/[json, locks, monotimes, nativesockets, os, strutils, tables, times],
@@ -478,294 +483,328 @@ proc runServerLoop*(
     replayWriter.writeChat(tickTime(sim.tickCount), 0, record)
     sim.applyRecord(record)
 
-  while true:
-    var
-      sockets: seq[WebSocket] = @[]
-      playerIndices: seq[int] = @[]
-      playerViewerStates: seq[PlayerViewerState] = @[]
-      globalViewers: seq[WebSocket] = @[]
-      globalStates: seq[GlobalViewerState] = @[]
-      replayCommands: seq[char] = @[]
-      replaySeekTicks: seq[int] = @[]
-      registrations: seq[tuple[seat: int, text: string]] = @[]
+  proc writeArtifacts() =
+    ## Closes the replay and publishes every artifact the runner reads. Called
+    ## on the normal exit AND from the host-error handler, which is what makes
+    ## `fault/host_error` a real ending rather than a declared one: the note
+    ## promises best-effort artifacts before re-raising.
+    replayWriter.closeReplayWriter()
+    if saveReplayPath.len > 0 and fileExists(saveReplayPath):
+      echo "Replay written: ", saveReplayPath,
+        " (", getFileSize(saveReplayPath), " bytes)"
+      runtimeConfig.writeReplay(readFile(saveReplayPath))
+    if eventsPath.len > 0:
+      writeFile(eventsPath, collectedEvents.eventsJsonl(sim.tickCount))
+      echo "Events written: ", eventsPath, " (", collectedEvents.len,
+        " events)"
+    if runtimeConfig.resultsUri.len > 0:
+      runtimeConfig.writeResults(sim.playerResultsJson() & "\n")
+    elif saveScoresPath.len > 0:
+      writeFile(saveScoresPath, sim.playerResultsJson() & "\n")
+    echo "Results: ", sim.playerResultsJson()
 
-    {.gcsafe.}:
-      withLock appState.lock:
-        for websocket in appState.closedSockets:
-          if not replayLoaded and websocket in appState.playerIndices:
-            let index = appState.playerIndices[websocket]
-            if index >= 0 and index < sim.players.len:
-              sim.recordGameAbandon(index)
-              replayWriter.writeLeave(tickTime(sim.tickCount), index)
-              sim.removePlayerAt(index)
-              for ws, value in appState.playerIndices.mpairs:
-                if value > index:
-                  dec value
-          appState.playerViewers.del(websocket)
-          appState.playerIndices.del(websocket)
-          appState.playerAddresses.del(websocket)
-          appState.playerSlots.del(websocket)
-          appState.playerTokens.del(websocket)
-          appState.playerReady.del(websocket)
-          appState.chatMessages.del(websocket)
-          appState.globalViewers.del(websocket)
-        appState.closedSockets.setLen(0)
+  proc stopServing() =
+    httpServer.close()
+    joinThread(serverThread)
 
-        if not replayLoaded:
-          # Joins are strictly slot-sequential.
-          var progressed = true
-          while progressed:
-            progressed = false
-            for websocket in appState.playerIndices.keys:
-              if appState.playerIndices[websocket] != 0x7fffffff:
-                continue
-              if sim.phase != Lobby or not sim.canAddPlayer():
-                appState.playerIndices[websocket] = -1
-                continue
-              let
-                address = appState.playerAddresses.getOrDefault(
-                  websocket, "unknown")
-                slot = appState.playerSlots.getOrDefault(websocket, -1)
-                token = appState.playerTokens.getOrDefault(websocket, "")
-                resolved = sim.resolvePlayerSlot(address, token, slot)
-              if resolved != sim.nextPlayerSlot():
-                continue
-              try:
-                let index = sim.addPlayer(address, resolved, token)
-                appState.playerIndices[websocket] = index
-                replayWriter.writeJoin(tickTime(sim.tickCount), index,
-                  address, resolved, token)
-                progressed = true
-              except CogballError:
-                appState.playerIndices[websocket] = -1
-              break
+  try:
+    while true:
+      var
+        sockets: seq[WebSocket] = @[]
+        playerIndices: seq[int] = @[]
+        playerViewerStates: seq[PlayerViewerState] = @[]
+        globalViewers: seq[WebSocket] = @[]
+        globalStates: seq[GlobalViewerState] = @[]
+        replayCommands: seq[char] = @[]
+        replaySeekTicks: seq[int] = @[]
+        registrations: seq[tuple[seat: int, text: string]] = @[]
 
-        for websocket, index in appState.playerIndices.pairs:
-          if websocket notin appState.playerViewers:
-            continue
-          sockets.add(websocket)
-          playerIndices.add(index)
-          playerViewerStates.add(appState.playerViewers[websocket])
-          if index >= 0 and index < sim.players.len:
-            let text = appState.chatMessages.getOrDefault(websocket, "")
-            if text.len > 0:
-              registrations.add((ord(sim.players[index].seat), text))
-        appState.chatMessages.clear()
-
-        for websocket, state in appState.globalViewers.pairs:
-          globalViewers.add(websocket)
-          globalStates.add(state)
-          if state.replaySeekTick >= 0:
-            replaySeekTicks.add(state.replaySeekTick)
-          for command in state.replayCommands:
-            replayCommands.add(command)
-          appState.globalViewers[websocket].replayCommands.setLen(0)
-          appState.globalViewers[websocket].replaySeekTick = -1
-
-    # EDIT 3: registration is consumed here and NEVER written to the replay
-    # chat stream. The redacted `register` record is written instead.
-    for entry in registrations:
-      let parsed = parseRegistration(entry.text)
-      if not parsed.ok:
-        continue                     ## any other chat text is dropped.
-      let seat = Seat(entry.seat and 1)
-      var policy = SeatPolicy(connected: true)
-      let prompt = clipRunes(parsed.node{"prompt"}.getStr(), MaxPromptRunes)
-      let scripted = parsed.node{"scripted"}
-      let label = clipRunes(parsed.node{"policy"}.getStr(), MaxPolicyRunes)
-      if prompt.len > 0:
-        policy.kind = pkLlm
-        policy.prompt = prompt
-        policy.baseline = ""
-      else:
-        policy.kind = pkScripted
-        policy.baseline =
-          if scripted.kind == JString and scripted.getStr().len > 0:
-            scripted.getStr()
-          else:
-            "formation"
-      policy.label = if label.len > 0: label else: policyKindText(policy.kind)
-      # The player re-sends its registration once after the first frame (in
-      # case the first send raced the slot registration), so only an ACTUAL
-      # change earns a second record.
-      let unchanged =
-        engine.policies[seat].connected and
-        engine.policies[seat].kind == policy.kind and
-        engine.policies[seat].baseline == policy.baseline and
-        engine.policies[seat].label == policy.label and
-        engine.policies[seat].prompt == policy.prompt
-      engine.policies[seat] = policy
-      if unchanged:
-        continue
-      let index = sim.playerFor(seat)
-      if index >= 0:
-        sim.players[index].policyKind = policy.kind
-        sim.players[index].baseline = policy.baseline
-        sim.players[index].policyLabel = policy.label
-        sim.players[index].registered = true
-      recordAndWrite($(%*{
-        "k": "register",
-        "seat": ord(seat),
-        "alias": seatAlias(seat),
-        "policy": policy.label,
-        "kind": policyKindText(policy.kind),
-        "baseline": policy.baseline
-      }))
-
-    # EDIT 4: the wall-clock stop, at the top of every loop iteration.
-    if not replayLoaded and sim.phase == Playing:
-      let elapsed = int((getMonoTime() - episodeStart).inSeconds)
-      if elapsed >= config.wallClockBudgetSeconds:
-        echo "cogball: wall-clock budget reached at ", elapsed, "s; stopping"
-        sim.wallClockStop()
-
-    # A seat that never connects does NOT end the episode: the no-show is
-    # declared, its trio plays the `formation` baseline, and the match runs to
-    # full time.
-    if not replayLoaded and sim.lobbyJoinTimedOut() and not failureDeclared:
-      failureDeclared = true
-      let stuck = sim.nextPlayerSlot()
-      declarePlayerFailure(stuck,
-        "player slot " & $stuck & " never joined the lobby within " &
-          $config.lobbyJoinTimeoutTicks & " lobby ticks (~" &
-          $(config.lobbyJoinTimeoutTicks div TargetFps) & "s)")
-      echo "cogball: lobby join timeout on slot ", stuck,
-        "; starting with the scripted baseline in that seat"
-      sim.startGame()
-
-    var frameEvents = newJArray()
-    if replayLoaded:
-      frameEvents = replayPlayer.advanceReplayFrame(
-        sim, broadcastTracker, replaySeekTicks, replayCommands)
-    else:
-      for command in replayCommands:
-        liveSpeedIndex.applySpeedCommand(command)
-      for _ in 0 ..< playbackSpeed(liveSpeedIndex):
-        if sim.phase == GameOver and sim.gameOverTimer <= 0:
-          break
-        # EDIT 2: the turn boundary, immediately before the tick it governs.
-        if sim.phase == Playing:
-          let elapsedTicks = sim.tickCount - sim.gameStartTick
-          # The phase flips INSIDE a step, so the first Playing tick is never a
-          # boundary. Turn 0 therefore fires on the first tick that has no
-          # directive yet — otherwise the opening five seconds would be played
-          # on the compiled-in default.
-          let opening = not (sim.hasDirective[Azure] and sim.hasDirective[Crimson])
-          if opening or elapsedTicks mod sim.turnTicks() == 0:
-            let seconds = int((getMonoTime() - episodeStart).inSeconds)
-            engine.turn(sim, elapsedTicks div sim.turnTicks(), seconds)
-            for record in engine.records:
-              recordAndWrite(record)
-        # EDIT 1: the input source is the control layer, not the socket.
-        let masks = sim.compileMasks(sim.activeDirective)
-        replayWriter.writeInputFrameMasks(tickTime(sim.tickCount), masks)
-        var inputs = newSeq[InputState](RobotCount)
-        for i in 0 ..< RobotCount:
-          inputs[i] = decodeInputMask(masks[i])
-        sim.step(inputs, prevInputs)
-        prevInputs = inputs
-        replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
-        if sim.collectEvents:
-          for event in sim.events:
-            collectedEvents.add(event)
-          sim.events.setLen(0)
-        for seat in Seat:
-          if sim.stats[seat].goals > lastGoalsSeen[seat]:
-            lastGoalsSeen[seat] = sim.stats[seat].goals
-            engine.noteGoal(sim.tickCount, int(sim.lastGoalBy), seat)
-        sim.stepEvents(broadcastTracker, frameEvents)
-        if sim.phase == GameOver and sim.gameOverTimer <= 0:
-          # The `result` record is written at the very END, so its finalTick is
-          # the same number results.json reports.
-          if not resultRecordWritten:
-            resultRecordWritten = true
-            recordAndWrite(sim.resultRecordJson())
-          quitAfterFrame = true
-          break
-
-    for i in 0 ..< sockets.len:
-      var nextState: PlayerViewerState
-      let framePacket = sim.buildSpriteProtocolPlayerUpdates(
-        playerIndices[i], playerViewerStates[i], nextState)
       {.gcsafe.}:
         withLock appState.lock:
-          if sockets[i] in appState.playerViewers:
-            appState.playerViewers[sockets[i]] = nextState
-            appState.playerReady[sockets[i]] = false
-      let wirePacket = dedupObjectPlacements(framePacket,
-        nextState.sentPlacements)
-      try:
-        if wirePacket.len == 0:
-          sockets[i].send("", BinaryMessage)
-        for chunk in chunkSpritePacket(wirePacket, MaxWsFrameBytes):
-          sockets[i].send(blobFromBytes(chunk), BinaryMessage)
-      except:
-        {.gcsafe.}:
-          withLock appState.lock:
-            discard markSocketClosed(sockets[i])
+          for websocket in appState.closedSockets:
+            if not replayLoaded and websocket in appState.playerIndices:
+              let index = appState.playerIndices[websocket]
+              if index >= 0 and index < sim.players.len:
+                sim.recordGameAbandon(index)
+                replayWriter.writeLeave(tickTime(sim.tickCount), index)
+                sim.removePlayerAt(index)
+                for ws, value in appState.playerIndices.mpairs:
+                  if value > index:
+                    dec value
+            appState.playerViewers.del(websocket)
+            appState.playerIndices.del(websocket)
+            appState.playerAddresses.del(websocket)
+            appState.playerSlots.del(websocket)
+            appState.playerTokens.del(websocket)
+            appState.playerReady.del(websocket)
+            appState.chatMessages.del(websocket)
+            appState.globalViewers.del(websocket)
+          appState.closedSockets.setLen(0)
 
-    for i in 0 ..< globalViewers.len:
-      var nextState: GlobalViewerState
-      var packet =
-        if replayLoaded:
-          sim.buildReplayViewerPacket(
-            replayPlayer, globalStates[i], nextState, frameEvents)
+          if not replayLoaded:
+            # Joins are strictly slot-sequential.
+            var progressed = true
+            while progressed:
+              progressed = false
+              for websocket in appState.playerIndices.keys:
+                if appState.playerIndices[websocket] != 0x7fffffff:
+                  continue
+                if sim.phase != Lobby or not sim.canAddPlayer():
+                  appState.playerIndices[websocket] = -1
+                  continue
+                let
+                  address = appState.playerAddresses.getOrDefault(
+                    websocket, "unknown")
+                  slot = appState.playerSlots.getOrDefault(websocket, -1)
+                  token = appState.playerTokens.getOrDefault(websocket, "")
+                  resolved = sim.resolvePlayerSlot(address, token, slot)
+                if resolved != sim.nextPlayerSlot():
+                  continue
+                try:
+                  let index = sim.addPlayer(address, resolved, token)
+                  appState.playerIndices[websocket] = index
+                  replayWriter.writeJoin(tickTime(sim.tickCount), index,
+                    address, resolved, token)
+                  progressed = true
+                except CogballError:
+                  appState.playerIndices[websocket] = -1
+                break
+
+          for websocket, index in appState.playerIndices.pairs:
+            if websocket notin appState.playerViewers:
+              continue
+            sockets.add(websocket)
+            playerIndices.add(index)
+            playerViewerStates.add(appState.playerViewers[websocket])
+            if index >= 0 and index < sim.players.len:
+              let text = appState.chatMessages.getOrDefault(websocket, "")
+              if text.len > 0:
+                registrations.add((ord(sim.players[index].seat), text))
+          appState.chatMessages.clear()
+
+          for websocket, state in appState.globalViewers.pairs:
+            globalViewers.add(websocket)
+            globalStates.add(state)
+            if state.replaySeekTick >= 0:
+              replaySeekTicks.add(state.replaySeekTick)
+            for command in state.replayCommands:
+              replayCommands.add(command)
+            appState.globalViewers[websocket].replayCommands.setLen(0)
+            appState.globalViewers[websocket].replaySeekTick = -1
+
+      # EDIT 3: registration is consumed here and NEVER written to the replay
+      # chat stream. The redacted `register` record is written instead.
+      for entry in registrations:
+        let parsed = parseRegistration(entry.text)
+        if not parsed.ok:
+          continue                     ## any other chat text is dropped.
+        let seat = Seat(entry.seat and 1)
+        var policy = SeatPolicy(connected: true)
+        let prompt = clipRunes(parsed.node{"prompt"}.getStr(), MaxPromptRunes)
+        let scripted = parsed.node{"scripted"}
+        let label = clipRunes(parsed.node{"policy"}.getStr(), MaxPolicyRunes)
+        if prompt.len > 0:
+          policy.kind = pkLlm
+          policy.prompt = prompt
+          policy.baseline = ""
         else:
-          sim.buildSpriteProtocolUpdates(
-            globalStates[i], nextState, sim.tickCount, true,
-            playbackSpeed(liveSpeedIndex), config.maxTicks, false, false, -1)
-      if not replayLoaded:
-        # The chrome channel rides the SAME binary sprite stream as the board,
-        # as the label of a reserved never-drawn 1x1 sprite, because that is
-        # the only channel that survives a hosted replay.
-        packet.addSprite(BroadcastChromeSpriteId, 1, 1, [0'u8, 0, 0, 0],
-          sim.buildStateJson(frameEvents, true,
-            playbackSpeed(liveSpeedIndex), config.maxTicks, false, false, -1,
-            -1, @[], 0, 0, false, false, false, @[], nil))
-      if packet.len == 0:
-        continue
-      try:
-        for chunk in chunkSpritePacket(packet, MaxWsFrameBytes):
-          globalViewers[i].send(blobFromBytes(chunk), BinaryMessage)
+          policy.kind = pkScripted
+          policy.baseline =
+            if scripted.kind == JString and scripted.getStr().len > 0:
+              scripted.getStr()
+            else:
+              "formation"
+        policy.label = if label.len > 0: label else: policyKindText(policy.kind)
+        # The player re-sends its registration once after the first frame (in
+        # case the first send raced the slot registration), so only an ACTUAL
+        # change earns a second record.
+        let unchanged =
+          engine.policies[seat].connected and
+          engine.policies[seat].kind == policy.kind and
+          engine.policies[seat].baseline == policy.baseline and
+          engine.policies[seat].label == policy.label and
+          engine.policies[seat].prompt == policy.prompt
+        engine.policies[seat] = policy
+        if unchanged:
+          continue
+        let index = sim.playerFor(seat)
+        if index >= 0:
+          sim.players[index].policyKind = policy.kind
+          sim.players[index].baseline = policy.baseline
+          sim.players[index].policyLabel = policy.label
+          sim.players[index].registered = true
+        recordAndWrite($(%*{
+          "k": "register",
+          "seat": ord(seat),
+          "alias": seatAlias(seat),
+          "policy": policy.label,
+          "kind": policyKindText(policy.kind),
+          "baseline": policy.baseline
+        }))
+
+      # EDIT 4: the wall-clock stop, at the top of every loop iteration.
+      if not replayLoaded and sim.phase == Playing:
+        let elapsed = int((getMonoTime() - episodeStart).inSeconds)
+        if elapsed >= config.wallClockBudgetSeconds:
+          echo "cogball: wall-clock budget reached at ", elapsed, "s; stopping"
+          sim.wallClockStop()
+
+      # A seat that never connects does NOT end the episode: the no-show is
+      # declared, its trio plays the `formation` baseline, and the match runs to
+      # full time.
+      if not replayLoaded and sim.lobbyJoinTimedOut() and not failureDeclared:
+        failureDeclared = true
+        let stuck = sim.nextPlayerSlot()
+        declarePlayerFailure(stuck,
+          "player slot " & $stuck & " never joined the lobby within " &
+            $config.lobbyJoinTimeoutTicks & " lobby ticks (~" &
+            $(config.lobbyJoinTimeoutTicks div TargetFps) & "s)")
+        echo "cogball: lobby join timeout on slot ", stuck,
+          "; starting with the scripted baseline in that seat"
+        sim.startGame()
+
+      var frameEvents = newJArray()
+      if replayLoaded:
+        frameEvents = replayPlayer.advanceReplayFrame(
+          sim, broadcastTracker, replaySeekTicks, replayCommands)
+      else:
+        for command in replayCommands:
+          liveSpeedIndex.applySpeedCommand(command)
+        for _ in 0 ..< playbackSpeed(liveSpeedIndex):
+          if sim.phase == GameOver and sim.gameOverTimer <= 0:
+            break
+          # EDIT 2: the turn boundary, immediately before the tick it governs.
+          if sim.phase == Playing:
+            let elapsedTicks = sim.tickCount - sim.gameStartTick
+            # The phase flips INSIDE a step, so the first Playing tick is never a
+            # boundary. Turn 0 therefore fires on the first tick that has no
+            # directive yet — otherwise the opening five seconds would be played
+            # on the compiled-in default.
+            let opening = not (sim.hasDirective[Azure] and sim.hasDirective[Crimson])
+            if opening or elapsedTicks mod sim.turnTicks() == 0:
+              let seconds = int((getMonoTime() - episodeStart).inSeconds)
+              engine.turn(sim, elapsedTicks div sim.turnTicks(), seconds)
+              for record in engine.records:
+                recordAndWrite(record)
+          # EDIT 1: the input source is the control layer, not the socket.
+          let masks = sim.compileMasks(sim.activeDirective)
+          replayWriter.writeInputFrameMasks(tickTime(sim.tickCount), masks)
+          var inputs = newSeq[InputState](RobotCount)
+          for i in 0 ..< RobotCount:
+            inputs[i] = decodeInputMask(masks[i])
+          sim.step(inputs, prevInputs)
+          prevInputs = inputs
+          replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
+          if sim.collectEvents:
+            for event in sim.events:
+              collectedEvents.add(event)
+            sim.events.setLen(0)
+          for seat in Seat:
+            if sim.stats[seat].goals > lastGoalsSeen[seat]:
+              lastGoalsSeen[seat] = sim.stats[seat].goals
+              engine.noteGoal(sim.tickCount, int(sim.lastGoalBy), seat)
+          sim.stepEvents(broadcastTracker, frameEvents)
+          if sim.phase == GameOver and sim.gameOverTimer <= 0:
+            # The `result` record is written at the very END, so its finalTick is
+            # the same number results.json reports.
+            if not resultRecordWritten:
+              resultRecordWritten = true
+              recordAndWrite(sim.resultRecordJson())
+            quitAfterFrame = true
+            break
+
+      for i in 0 ..< sockets.len:
+        var nextState: PlayerViewerState
+        let framePacket = sim.buildSpriteProtocolPlayerUpdates(
+          playerIndices[i], playerViewerStates[i], nextState)
         {.gcsafe.}:
           withLock appState.lock:
-            if globalViewers[i] in appState.globalViewers:
-              let pending = appState.globalViewers[globalViewers[i]]
-              var merged = nextState
-              merged.mouseX = pending.mouseX
-              merged.mouseY = pending.mouseY
-              merged.mouseLayer = pending.mouseLayer
-              merged.mouseDown = pending.mouseDown
-              if pending.clickPending:
-                merged.clickPending = true
-              if pending.replaySeekTick >= 0:
-                merged.replaySeekTick = pending.replaySeekTick
-              if pending.replayCommands.len > 0:
-                merged.replayCommands.add(pending.replayCommands)
-              appState.globalViewers[globalViewers[i]] = merged
-      except:
-        {.gcsafe.}:
-          withLock appState.lock:
-            discard markSocketClosed(globalViewers[i])
+            if sockets[i] in appState.playerViewers:
+              appState.playerViewers[sockets[i]] = nextState
+              appState.playerReady[sockets[i]] = false
+        let wirePacket = dedupObjectPlacements(framePacket,
+          nextState.sentPlacements)
+        try:
+          if wirePacket.len == 0:
+            sockets[i].send("", BinaryMessage)
+          for chunk in chunkSpritePacket(wirePacket, MaxWsFrameBytes):
+            sockets[i].send(blobFromBytes(chunk), BinaryMessage)
+        except:
+          {.gcsafe.}:
+            withLock appState.lock:
+              discard markSocketClosed(sockets[i])
 
-    if quitAfterFrame:
-      replayWriter.closeReplayWriter()
-      if saveReplayPath.len > 0 and fileExists(saveReplayPath):
-        echo "Replay written: ", saveReplayPath,
-          " (", getFileSize(saveReplayPath), " bytes)"
-        runtimeConfig.writeReplay(readFile(saveReplayPath))
-      if eventsPath.len > 0:
-        writeFile(eventsPath, collectedEvents.eventsJsonl(sim.tickCount))
-        echo "Events written: ", eventsPath, " (", collectedEvents.len,
-          " events)"
-      if runtimeConfig.resultsUri.len > 0:
-        runtimeConfig.writeResults(sim.playerResultsJson() & "\n")
-      elif saveScoresPath.len > 0:
-        writeFile(saveScoresPath, sim.playerResultsJson() & "\n")
-      echo "Results: ", sim.playerResultsJson()
-      httpServer.close()
-      joinThread(serverThread)
-      break
+      for i in 0 ..< globalViewers.len:
+        var nextState: GlobalViewerState
+        var packet =
+          if replayLoaded:
+            sim.buildReplayViewerPacket(
+              replayPlayer, globalStates[i], nextState, frameEvents)
+          else:
+            sim.buildSpriteProtocolUpdates(
+              globalStates[i], nextState, sim.tickCount, true,
+              playbackSpeed(liveSpeedIndex), config.maxTicks, false, false, -1)
+        if not replayLoaded:
+          # The chrome channel rides the SAME binary sprite stream as the board,
+          # as the label of a reserved never-drawn 1x1 sprite, because that is
+          # the only channel that survives a hosted replay.
+          packet.addSprite(BroadcastChromeSpriteId, 1, 1, [0'u8, 0, 0, 0],
+            sim.buildStateJson(frameEvents, true,
+              playbackSpeed(liveSpeedIndex), config.maxTicks, false, false, -1,
+              -1, @[], 0, 0, false, false, false, @[], nil))
+        if packet.len == 0:
+          continue
+        try:
+          for chunk in chunkSpritePacket(packet, MaxWsFrameBytes):
+            globalViewers[i].send(blobFromBytes(chunk), BinaryMessage)
+          {.gcsafe.}:
+            withLock appState.lock:
+              if globalViewers[i] in appState.globalViewers:
+                let pending = appState.globalViewers[globalViewers[i]]
+                var merged = nextState
+                merged.mouseX = pending.mouseX
+                merged.mouseY = pending.mouseY
+                merged.mouseLayer = pending.mouseLayer
+                merged.mouseDown = pending.mouseDown
+                if pending.clickPending:
+                  merged.clickPending = true
+                if pending.replaySeekTick >= 0:
+                  merged.replaySeekTick = pending.replaySeekTick
+                if pending.replayCommands.len > 0:
+                  merged.replayCommands.add(pending.replayCommands)
+                appState.globalViewers[globalViewers[i]] = merged
+        except:
+          {.gcsafe.}:
+            withLock appState.lock:
+              discard markSocketClosed(globalViewers[i])
 
-    discard runFrameLimiter(lastTick, not replayLoaded and config.fastMode,
-      sockets, playerIndices, sim.players.len)
+      if quitAfterFrame:
+        writeArtifacts()
+        stopServing()
+        break
+
+      discard runFrameLimiter(lastTick, not replayLoaded and config.fastMode,
+        sockets, playerIndices, sim.players.len)
+  except CatchableError as failure:
+    # fault/host_error. An unexpected exception used to unwind straight out of
+    # `isMainModule` with a traceback and NO results.json, no replay upload and
+    # no events file, which left the runner with an unattributable episode and
+    # made `hostErrorStop` (and the manifest's `host_error` endRule) code that
+    # nothing could reach. Now the verdict is recorded, the artifacts are
+    # written best-effort, and the exception is re-raised unchanged so the exit
+    # status and the traceback still say what happened.
+    echo "cogball: host error: ", failure.msg
+    sim.hostErrorStop()
+    try:
+      if not resultRecordWritten:
+        resultRecordWritten = true
+        recordAndWrite(sim.resultRecordJson())
+      writeArtifacts()
+    except CatchableError as artifactFailure:
+      echo "cogball: artifact write after host error failed: ",
+        artifactFailure.msg
+    try:
+      stopServing()
+    except CatchableError:
+      discard
+    raise
