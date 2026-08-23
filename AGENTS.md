@@ -104,6 +104,15 @@ for exactly this reason. If you find yourself wanting `intent` inside
   the container's package tree because a committed `nim.cfg` pins the author's
   machine paths and is wrong on every other host.
 
+## Divergences from the accepted design note are written down
+
+The accepted note (`docs/plans/2026-08-22-cogball-design-v2.md`) is frozen: it
+records what was agreed and is not edited afterwards. Every place the code does
+something it describes differently is listed in
+[docs/plans/note-divergences.md](docs/plans/note-divergences.md), with what the
+code does instead and why. **A divergence that is not in that file is a bug**
+— if you make one, add it there in the same commit.
+
 ## The baseline constants come from a committed sweep, not from the note
 
 `src/cogball/baselines.nim`'s tuning constants are `{.intdefine.}` and every
