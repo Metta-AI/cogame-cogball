@@ -648,13 +648,6 @@ proc runServerLoop*(
           "baseline": policy.baseline
         }))
 
-      # EDIT 4: the wall-clock stop, at the top of every loop iteration.
-      if not replayLoaded and sim.phase == Playing:
-        let elapsed = int((getMonoTime() - episodeStart).inSeconds)
-        if elapsed >= config.wallClockBudgetSeconds:
-          echo "cogball: wall-clock budget reached at ", elapsed, "s; stopping"
-          sim.wallClockStop()
-
       # A seat that never connects does NOT end the episode: the no-show is
       # declared, its trio plays the `formation` baseline, and the match runs to
       # full time.
@@ -679,6 +672,16 @@ proc runServerLoop*(
         for _ in 0 ..< playbackSpeed(liveSpeedIndex):
           if sim.phase == GameOver and sim.gameOverTimer <= 0:
             break
+          # EDIT 4: the wall-clock stop. Inside the tick loop, not once per
+          # outer iteration: a spectator can raise liveSpeedIndex to 5, which
+          # steps up to 16 ticks per iteration, and the stop must not be
+          # coarser than the thing it is stopping.
+          if sim.phase == Playing:
+            let elapsed = int((getMonoTime() - episodeStart).inSeconds)
+            if elapsed >= config.wallClockBudgetSeconds:
+              echo "cogball: wall-clock budget reached at ", elapsed,
+                "s; stopping"
+              sim.wallClockStop()
           # EDIT 2: the turn boundary, immediately before the tick it governs.
           if sim.phase == Playing:
             let elapsedTicks = sim.tickCount - sim.gameStartTick
