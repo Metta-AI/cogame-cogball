@@ -1,10 +1,9 @@
 .git
-.github
-.venv
+.DS_Store
+nim.cfg
+nimcache
+out
+tmp
 build
-dist
-viewer/dist
-tests
-docs
-**/__pycache__
-*.pyc
+replay-viewer/dist
+*.tmp

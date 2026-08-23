@@ -1,0 +1,21 @@
+{
+  "seed": 12631057,
+  "num_agents": 2,
+  "minPlayers": 2,
+  "maxTicks": 4800,
+  "maxGames": 1,
+  "turnTicks": 120,
+  "turnBudgetMs": 9000,
+  "attempt1Ms": 6000,
+  "retryMs": 2500,
+  "wallClockBudgetSeconds": 690,
+  "lobbyJoinTimeoutTicks": 2400,
+  "startWaitTicks": 24,
+  "gameOverTicks": 120,
+  "mercyGoalDiff": 5,
+  "stalemateTicks": 240,
+  "fastMode": true,
+  "showPlayerLabels": false,
+  "players": [{"name": "Azure"}, {"name": "Crimson"}],
+  "slots": [{"team": "azure"}, {"team": "crimson"}]
+}

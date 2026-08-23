@@ -1,378 +1,28 @@
 {
-  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
-  "tags": [
-    "cogball",
-    "soccer",
-    "physics",
-    "team",
-    "continuous"
-  ],
-  "episode_timeout_minutes": 20,
   "game": {
     "name": "cogball",
-    "replay_viewer": {
-      "bundle": "static-replay-viewer"
-    },
-    "description": "3v3 robot soccer in a continuous 2D physics world. Two seats of three wheeled robots chase one ball on a walled indoor pitch and try to push it over the opponent's goal line; nothing is gridded, and there is no out of play. Every five seconds of match time each seat's coach - an LLM prompt, or one of two scripted baselines - issues ONE directive for all three of its robots (a role, a target point, an intent and a kick policy each), and a deterministic control layer executes it at 30 Hz. Robots are car-like: thrust acts along the heading and lateral velocity is scrubbed off by grip, so facing the right way is part of the skill. The motive is team zero-sum and margin-sensitive: score = 0.5 + 0.5*clamp(goal difference / 3, -1, +1), so the two seats always sum to exactly 1.0. Replays re-simulate from the seed and the recorded action log in a static wasm viewer built from the same C physics core the server runs.",
-    "owner": "daveey@softmax.com",
+    "display_name": "Cogball",
+    "description": "3v3 robot soccer in a continuous 2D physics world. A policy is just a prompt: every five seconds you issue ONE directive for all three of your robots and a deterministic controller executes it.",
+    "tags": [
+      "soccer",
+      "physics",
+      "team",
+      "continuous",
+      "llm"
+    ],
     "runnable": {
       "type": "game",
-      "image": "{{GAME_IMAGE}}",
+      "image": "{{COGBALL_IMAGE}}",
       "run": [
         "/bin/cogball"
       ],
+      "env": {
+        "ANTHROPIC_API_KEY_URI": "secret://coworld/cogball/anthropic_api_key"
+      },
       "source_url": "https://github.com/Metta-AI/cogame-cogball/tree/main"
     },
-    "config_schema": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "tokens",
-        "players"
-      ],
-      "properties": {
-        "tokens": {
-          "description": "One connection token per seat, indexed by slot. Injected by the runner; never authored.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "players": {
-          "description": "One player display-name object per seat. cogball always seats exactly two: one full trio each.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "name"
-            ],
-            "properties": {
-              "name": {
-                "type": "string",
-                "minLength": 1
-              }
-            }
-          }
-        },
-        "seed": {
-          "description": "Deterministic sim seed. Omitted: the server derives one and records it in the results and the replay.",
-          "type": "integer"
-        },
-        "max_ticks": {
-          "description": "Match length in ticks (30 ticks = 1 s).",
-          "type": "integer",
-          "minimum": 1,
-          "default": 7200
-        },
-        "turn_ticks": {
-          "description": "Ticks per decision turn; the coach issues one directive per turn.",
-          "type": "integer",
-          "minimum": 1,
-          "default": 150
-        },
-        "turn_budget_seconds": {
-          "description": "Wall-clock bound on collecting BOTH seats' directives for one turn; they are issued as one parallel batch.",
-          "type": "number",
-          "exclusiveMinimum": 0,
-          "default": 12
-        },
-        "tick_deadline_ms": {
-          "description": "Per-tick transport deadline.",
-          "type": "integer",
-          "minimum": 1,
-          "default": 1000
-        },
-        "player_connect_timeout_seconds": {
-          "description": "Seconds to wait for both seats before kickoff; a seat that never connects plays the formation baseline and is reported to COGAME_PLAYER_FAILURE_URI.",
-          "type": "number",
-          "minimum": 0,
-          "default": 90
-        },
-        "wall_clock_budget_seconds": {
-          "description": "Engine hard stop: the match ends with reason \"deadline\" once this much real time has elapsed, so results and the replay are always written before the platform's episode timeout kills the container.",
-          "type": "number",
-          "exclusiveMinimum": 0,
-          "default": 690
-        },
-        "num_agents": {
-          "description": "Agent seats; must equal the player slot count. Used by the ladder for block seating.",
-          "type": "integer",
-          "minimum": 2,
-          "maximum": 2,
-          "default": 2
-        }
-      }
-    },
-    "results_schema": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "names",
-        "aliases",
-        "policy_kinds",
-        "scores",
-        "win",
-        "goals",
-        "reason",
-        "end_rule",
-        "winner",
-        "final_tick",
-        "final_turn",
-        "seed",
-        "shots",
-        "shots_on_target",
-        "saves",
-        "passes_completed",
-        "interceptions",
-        "possession_ticks",
-        "distance_m",
-        "llm_turns",
-        "fallback_turns",
-        "fallback_causes"
-      ],
-      "properties": {
-        "names": {
-          "description": "One player name per seat, in seat-slot order.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "string"
-          }
-        },
-        "aliases": {
-          "description": "The in-game team aliases the seats played as.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "string"
-          }
-        },
-        "policy_kinds": {
-          "description": "Per seat: llm (a PLAYER_PROMPT coach) or scripted.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "string",
-            "enum": [
-              "llm",
-              "scripted"
-            ]
-          }
-        },
-        "scores": {
-          "description": "0.5 + 0.5*clamp(goal_difference/3, -1, +1) per seat; the two seats always sum to exactly 1.0.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "number"
-          }
-        },
-        "win": {
-          "description": "Per seat: did this seat finish ahead on goals.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "boolean"
-          }
-        },
-        "goals": {
-          "description": "Goals scored by each seat.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "reason": {
-          "description": "Why the episode ended.",
-          "type": "string",
-          "enum": [
-            "complete",
-            "deadline",
-            "fault"
-          ]
-        },
-        "end_rule": {
-          "description": "The detail behind `reason`: full time, the mercy rule, the engine's wall-clock hard stop, a sim fault, or an unexpected host error.",
-          "type": "string",
-          "enum": [
-            "full_time",
-            "mercy",
-            "wall_clock",
-            "sim_fault",
-            "host_error"
-          ]
-        },
-        "winner": {
-          "description": "Winning seat: 0 Azure, 1 Magenta, null draw.",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "enum": [
-            0,
-            1,
-            null
-          ]
-        },
-        "final_tick": {
-          "description": "Sim tick at the final whistle.",
-          "type": "integer",
-          "minimum": 0
-        },
-        "final_turn": {
-          "description": "Decision turns completed.",
-          "type": "integer",
-          "minimum": 0
-        },
-        "seed": {
-          "description": "The deterministic sim seed the episode ran with.",
-          "type": "integer"
-        },
-        "shots": {
-          "description": "Shots attempted per seat.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "shots_on_target": {
-          "description": "Shots whose post-kick ray reached the goal mouth.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "saves": {
-          "description": "Shots on target stopped by a defender in its own penalty area.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "passes_completed": {
-          "description": "Kicks with intent `pass` collected by a teammate within 120 ticks.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "interceptions": {
-          "description": "Passes collected by an opponent instead.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "possession_ticks": {
-          "description": "Ticks each seat was the last toucher.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "distance_m": {
-          "description": "Metres travelled by each robot, in robot-index order (AZ-1..3 then MG-1..3).",
-          "type": "array",
-          "minItems": 6,
-          "maxItems": 6,
-          "items": {
-            "type": "number"
-          }
-        },
-        "llm_turns": {
-          "description": "Turns each seat's directive came from the LLM coach.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "fallback_turns": {
-          "description": "Turns each seat fell back to the scripted layer.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "fallback_causes": {
-          "description": "Per-seat fallback cause counters; they sum to fallback_turns.",
-          "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "timeout",
-              "parse_error",
-              "transport_error",
-              "no_credentials",
-              "budget_guard"
-            ],
-            "properties": {
-              "timeout": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "parse_error": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "transport_error": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "no_credentials": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "budget_guard": {
-                "type": "integer",
-                "minimum": 0
-              }
-            }
-          }
-        }
-      }
+    "replay_viewer": {
+      "bundle": "static-replay-viewer"
     },
     "protocols": {
       "player": {
@@ -387,15 +37,23 @@
     "docs": {
       "readme": {
         "type": "text",
-        "value": "# cogball\n\n**3v3 robot soccer in a continuous 2D physics world.** Two teams of three wheeled robots chase\none ball on a walled indoor pitch and try to push it over the opponent's goal line. Nothing is\ngridded: positions, velocities and headings are IEEE doubles; the only discrete things in the\nworld are the tick and the kick.\n\nCogball is a Coworld. A policy is just a prompt: every 5 seconds of match time a coach — an LLM,\nor one of two scripted baselines — issues **one directive** for all three of its robots (a role, a\ntarget point, an intent and a kick policy each), and a deterministic control layer executes it at\n30 Hz. The coach is the tactics; the control layer is the reflexes.\n\n```\nSeats            2 (num_agents = 2). One seat = one full trio.\n                 Seat 0 Azure  (AZ-1..3) defends x = -20, attacks +x\n                 Seat 1 Magenta (MG-1..3) defends x = +20, attacks -x\nPitch            x in [-20, +20], y in [-12.5, +12.5]; goal mouths |y| <= 3.5 at x = +-20\nTime             30 ticks/s, 4 physics substeps per tick, 7200 ticks = 4:00 of soccer\nTurns            48 decision turns of 150 ticks (5.0 s)\nMotive           team zero-sum: score(seat) = 0.5 + 0.5 * clamp(goal_difference / 3, -1, +1)\n                 so the two seats' scores always sum to exactly 1.0\n```\n\n## How a match plays\n\nAt the start of each turn the server freezes the world, sends each seat its view (the complete\nphysical state — soccer is a perfect-information sport — plus the score, the clock and its own\nlast directive), and asks both coaches **in one parallel batch** what to do. Each reply is a\nsingle JSON object:\n\n```json\n{\"note\": \"compact, keeper stays home\",\n \"robots\": [{\"id\": \"AZ-1\", \"role\": \"keeper\", \"intent\": \"hold\", \"target\": [-17.0, 0.4],\n             \"pass_to\": null, \"kick\": \"auto\", \"say\": \"holding the arc\"}, \"... and two more\"]}\n```\n\nIntents are `chase`, `intercept`, `hold`, `shoot`, `pass`, `clear` and `press`. The control layer\nturns each one into a steering point, then into thrust and turn commands: robots are car-like, so\nlateral velocity is scrubbed off by grip and **facing the right way is part of the skill**.\n\nA reply that is late, malformed or unusable is retried once and then replaced by the `formation`\nbaseline's directive — the match never stalls waiting for a coach.\n\n## Policies\n\nOne image, switched by environment variable:\n\n| env | what the seat plays |\n| --- | --- |\n| `PLAYER_PROMPT=<strategy text>` | an LLM coach; the prompt *is* the policy |\n| `PLAYER_SCRIPTED=formation` | keeper on the arc, striker on the ball, third robot shuttling |\n| `PLAYER_SCRIPTED=swarm` | everyone chases; deliberately weaker |\n| neither | `formation` |\n\nBoth shipped champions (`cogball-total`, `cogball-counter`) are prompt policies.\n`docs/COACHING.md` is the guide to writing one.\n\n## Determinism and replays\n\nThe physics core (`sim/cogball_core.c`, ~400 lines of C99) uses **only `+ - * / sqrt`** on\ndoubles — no libm, no `float`, no `-ffast-math`. WebAssembly specifies those operations exactly\nand forbids contraction, so the server build (wasmtime, standalone wasm) and the browser build\n(emscripten) produce **bit-identical** state. That is what lets a replay be nothing more than a\nseed plus an action log:\n\n```\nreplay = {seed, first_kickoff_seat, controls_b64, keyframes[…digests…], events[…], results}\n```\n\n`tests/test_determinism.py` is the inviolable gate: identical digests at every 30-tick keyframe,\nacross both toolchains. If it fails, the physics or a build flag changed — fix the code, never\nthe test.\n\nThe replay viewer is a **static wasm bundle** (`viewer/`), built from the same C source by\n`tools/build_replay_viewer.sh`. It re-simulates in the browser and draws the pitch, the robots,\nball trails, kick rings, goal fireworks, an instant slow-motion goal replay, and a persistent\nposition-history heat trail per robot — over four minutes the keeper's arc, the back's shuttle\nand the striker's runs separate visually, so you can see roles emerge with no labels on screen.\n\n## Layout\n\n```\nsim/            cogball_core.{c,h}, cogball_config.h, viewer_main.c, build_sim.sh, build_viewer.sh\nserver/cogball/ server.py engine.py sim.py control.py directives.py baselines.py llm.py\n                replay.py config.py defaults.py uris.py\nplayers/        cogball_player.py    (register once, then watch)\nviewer/         index.html, static_replay.js  -> viewer/dist (wasm bundle)\ntests/          physics, determinism, control, baselines, llm parsing, engine, replay,\n                server, manifest, viewer, startup, perf\ntools/          build_replay_viewer.sh, ci/docker_smoke.sh, ci/policies.json\ndocs/           PROTOCOL.md, COACHING.md, plans/\n```\n\n## Build and test\n\n```sh\nbash sim/build_sim.sh       # -> build/cogball_sim.wasm      (wasmtime host)\nbash sim/build_viewer.sh    # -> viewer/dist/ + build/viewer_core.{js,wasm}\nuv sync && uv run pytest\n```\n\nBoth build scripts need emscripten; the viewer build also downloads the sha-pinned raylib 5.5 web\nrelease. CI (`.github/workflows/ci.yml`) runs all of it, plus a raw-Docker episode smoke and the\nstatic replay-viewer bundle build.\n"
+        "value": "# cogball\n\n**3v3 robot soccer in a continuous 2D physics world.** Two teams of three\nwheeled robots chase one ball on a walled 40 × 25 m indoor pitch and try to put\nit through the opponent's goal mouth. Nothing is gridded: positions and\nvelocities are continuous fixed-point quantities, and the only discrete things\nin the world are the tick, the actuator bits and the kick.\n\n**A policy is just a prompt.** A seat does not drive motors. Every five seconds\nof match time it issues ONE directive for all three of its robots — a role, an\nintent, a target point and a kick permission each — and a deterministic control\nlayer executes it for the next five seconds. Forty turns, one directive each.\nPassing, positioning and role emergence are the whole game.\n\n```\n                 +20 m\n   AZURE  ┌───────────────────────┐  CRIMSON\n   goal  ▐│    ·   AZ-2      CR-1 │▌  goal\n         ▐│  AZ-1    (o)          │▌\n         ▐│         CR-3   AZ-3   │▌\n          └───────────────────────┘\n                 −20 m\n```\n\n* [docs/RULES.md](docs/RULES.md) — the pitch, the physics, the resolution\n  order, the scoring and the determinism contract.\n* [docs/PROTOCOL.md](docs/PROTOCOL.md) — the runtime contract, the seat\n  protocol, the `COWLDBAL` replay bytes and the results document.\n* [docs/COACHING.md](docs/COACHING.md) — how to write a cogball prompt.\n\n## Seats and scoring\n\n`num_agents` is **2**: one seat is one full trio. Seat 0 is **Azure**\n(`AZ-1..3`), seat 1 is **Crimson** (`CR-1..3`). Team zero-sum and\nmargin-sensitive, always summing to 1.0:\n\n```\nscore(seat) = 0.5 + 0.5 · clamp((goals_you − goals_them) / 3, −1, +1)\n```\n\n3–0 or better = 1.000; 1–0 = 0.667; any draw = 0.500. Higher is better.\n\n## Playing\n\nOne image, two entrypoints, every policy env-switched:\n\n```bash\n# the game\ndocker run --rm -e COGAME_CONFIG_URI=file:///coworld/config.json \\\n  coworld-cogball:latest /bin/cogball\n\n# an LLM seat\ndocker run --rm -e COWORLD_PLAYER_WS_URL=ws://game:8080/player?slot=0 \\\n  -e PLAYER_PROMPT=\"Play total football: never leave your own goal empty…\" \\\n  coworld-cogball:latest /bin/cogball-player\n\n# a scripted seat\ndocker run --rm -e COWORLD_PLAYER_WS_URL=ws://game:8080/player?slot=1 \\\n  -e PLAYER_SCRIPTED=formation \\\n  coworld-cogball:latest /bin/cogball-player\n```\n\n`formation` is the reference baseline (one keeper on the arc, the nearest robot\non the ball, the third in the channel) and also the fallback whenever a coaching\ncall fails twice. `swarm` is the second filler — everyone chases — deliberately\nweaker, so the ladder has a spread.\n\n## Watching\n\nThe replay ships as a **static wasm bundle**, never a pod:\n`tools/build_replay_viewer.sh` builds `replay-viewer/cogball_replay.nim` — which\nimports the **same** `src/cogball/sim.nim` the native server ran — through the\npinned `emscripten/emsdk:4.0.15` container, and the browser re-simulates the\nrecorded action log and checks the recorded `gameHash` every tick.\n\nThe broadcast chrome shows: the score bug (goals, possession, shots), the clock\nand coaching turn, a plain-language match feed carrying the coaches' own notes,\na ball trail tinted by the last toucher, kick rings, a goal celebration, an\n**instant slow-mo goal replay**, and position-history turf paint — each robot\npaints the ground it drives over in its own hue, so over 3:20 the keeper's arc,\nthe back's shuttle and the striker's runs separate visually, with no labels.\n\n## Layout\n\n```\nsrc/cogball.nim              game entrypoint (seed randomisation lives here)\nsrc/cogball_player.nim       every policy: registers, then idles\nsrc/cogball/\n  sim_types.nim              consts (incl. GameVersion), types, wire format\n  trig.nim                   the committed SinQ12 table, isqrt, bradsOfVectorI\n  pitch.nim                  geometry, collision half-planes, the goal test\n  sim.nim                    the integer physics core and the step loop\n  control.nim                directive -> six actuator masks (integer only)\n  directives.nim             view coordinates, rune truncation, the parser\n  baselines.nim              the formation and swarm scripted policies\n  llm.nim                    the credential ladder and transport\n  decide.nim                 the turn engine: one parallel batch per turn\n  server.nim                 mummy HTTP/ws, the COGAME_* contract, the loop\n  replays.nim                the COWLDBAL codec, keyframes, the scan\n  global.nim                 the board renderer\n  broadcast.nim              the chrome JSON channel and the record fold-back\nreplay-viewer/               the emscripten entry points and the worker\nclient/                      the broadcast chrome (kept from paintbot)\ntools/                       build hooks, forensics, CI helpers\ntests/                       the determinism gate and eleven suites around it\n```\n\n## Building and testing\n\nThe repo builds with [nimby](https://github.com/treeform/nimby):\n\n```bash\nnimby --global sync nimby.lock\nnim r --path:src tests/test_determinism.nim\n```\n\nCI runs every `tests/*.nim` twice — debug (range and overflow checks) and\n`-d:release` — plus a raw-Docker episode smoke and the wasm bundle build with\nthe native↔wasm determinism gate. See `.github/workflows/ci.yml`.\n\nDesign notes live in `docs/plans/`. The lineage is\n[`Metta-AI/coworld-ctf`](https://github.com/Metta-AI/coworld-ctf) (paintbot):\nthe game loop, the per-tick replays, the static wasm viewer, the broadcast\nchrome and the CI wiring are its, kept; the physics replaces the arena rules.\n"
       },
       "pages": [
+        {
+          "id": "rules.md",
+          "title": "Rules",
+          "content": {
+            "type": "text",
+            "value": "# Cogball — rules\n\nCogball is **3v3 robot soccer** on a walled indoor pitch in a continuous 2D\nphysics world. Two teams of three wheeled robots chase one ball and try to put\nit through the opponent's goal mouth. Nothing is gridded: positions and\nvelocities are continuous fixed-point quantities, and the only discrete things\nin the world are the tick, the actuator bits and the kick.\n\n## Seats\n\n`num_agents` is **2**. One seat is one full trio.\n\n| seat | alias | robots | defends | attacks |\n|---|---|---|---|---|\n| 0 | Azure | `AZ-1` `AZ-2` `AZ-3` | view-x = −20 m | +x |\n| 1 | Crimson | `CR-1` `CR-2` `CR-3` | view-x = +20 m | −x |\n\nA seat does not drive motors. Every five seconds of match time it issues **one\ndirective** for all three of its robots, and a deterministic control layer\nexecutes it for the next five seconds. See [COACHING.md](COACHING.md).\n\n## The pitch\n\nAll world quantities are integer **micrometres** (µm) and **µm per tick**. The\ncoordinates a policy sees are **view coordinates**: metres from the centre spot,\n`X = (x − 22 m)`, `Y = (y − 12.5 m)`, so the pitch is X ∈ [−20, +20],\nY ∈ [−12.5, +12.5].\n\n| thing | value |\n|---|---|\n| world box | 44 m × 25 m |\n| playing surface | 40 m × 25 m (x ∈ [2 m, 42 m]) |\n| goal mouths | the planes x = 2 m and x = 42 m, y ∈ [9 m, 16 m] (7 m wide) |\n| goal boxes | 2 m deep behind each mouth, closed on all sides |\n| goalposts | static circles, r = 0.12 m, at the four mouth corners |\n| penalty areas | Azure: x ≤ 8 m and \\|y − 12.5 m\\| ≤ 7 m; Crimson mirrored |\n| centre spot / circle | (22 m, 12.5 m), r = 3 m |\n| neutral drop spots | (11 m ‖ 33 m) × (6.5 m ‖ 18.5 m) |\n\n**There is no out of play.** No throw-ins, no corners, no offside. The pitch is\nfully walled.\n\n## Bodies\n\nSix robots: radius 0.55 m, mass 6000 g, each with a position, a velocity, a\nheading (`headingQ`, 1/16 brad), a spin and a kick cooldown. One ball: radius\n0.35 m, mass 450 g, position and velocity only — no spin, no Magnus effect.\n\nRobots are car-like: thrust acts along the heading and lateral velocity is\nscrubbed off by grip, so **facing the right way is part of the skill**.\n\n## Time\n\n24 ticks per second. A match is **4800 ticks = 200 s = 3:20**, divided into\n**40 coaching turns of 120 ticks (5.0 s)**. Each tick integrates **four\nsubsteps** of 1/96 s, so a 25 m/s ball moves at most 0.26 m per substep — less\nthan its own 0.70 m diameter, which is why nothing can tunnel.\n\n## Actuators\n\nA robot's action for one tick is exactly one **Sprite v1 input bitmask** — the\nsame `uint8` the replay records and the viewer replays.\n\n| button | meaning |\n|---|---|\n| `ButtonUp` | thrust forward |\n| `ButtonDown` | thrust reverse |\n| `ButtonLeft` | torque counter-clockwise |\n| `ButtonRight` | torque clockwise |\n| `ButtonSelect` | brake (grip ×3 this tick; thrust is forced to 0) |\n| `ButtonA` | kick |\n| `ButtonB`, `ButtonC` | reserved, must be 0 |\n\nUp+Down together is no thrust; Left+Right together is no torque.\n\n## Resolution order\n\nEvery tick `t`, in this exact order, no exceptions:\n\n1. **Turn boundary.** If `t mod 120 == 0` the directive collected for turn\n   `t div 120` becomes each seat's active directive. Directives are **excluded\n   from `gameHash`**: nothing a coach says can move the hash chain.\n2. **Kickoff freeze.** If `t < freezeUntil`, every mask is forced to 0, every\n   velocity and spin is zeroed, and steps 5–6 are skipped. The tick still\n   advances, the hash is still written, the turn boundary still fires.\n3. **Control compile.** For each robot in index order `AZ-1 … CR-3` the control\n   layer reads the sim state plus that seat's directive and emits one mask.\n4. **Record.** The six masks go to the sim and to the replay. **This is the\n   determinism boundary.**\n5. **Kicks.** In robot index order, for each robot with `ButtonA`, a zero\n   cooldown, the ball within 1.35 m and inside a ±60° frontal arc: the ball's\n   along-heading speed becomes `max(vpar, 0) + 9.0 m/s`, its perpendicular\n   component is halved, the robot takes the mass-ratio reaction, and the\n   cooldown is set to 12 ticks.\n6. **Four substeps**, each in this order: robot integration (spin, heading,\n   thrust, lateral grip, drag, speed cap, move) → ball integration → robot–wall\n   → robot–robot → robot–ball → ball–post → ball–wall → goal test.\n7. **Cooldowns** decrement.\n8. **Stats and the stalemate counter.**\n9. **Hash.** One `gameHash` per tick.\n10. **Turn end.** Emit `turn_end`; mercy at a goal difference of 5; full time at\n    `maxTicks`.\n\n### Kickoff\n\nBall on the centre spot, everything at rest. Azure faces east, Crimson west.\nThe **restarting** seat (the conceding one; at match start `seed and 1`) places\nits first robot 1.5 m behind the ball, the other seat's first robot 3.0 m away\non the far side, and the four flank robots at ±9.0 m on their own side at\n12.5 m ± 4.5 m — each with a deterministic y jitter drawn from the seeded sim\nRNG. Play resumes 25 ticks later.\n\n### Neutral drop\n\nWith a fully walled pitch the corners are an absorbing state: a robot (r =\n0.55 m) can never get corner-side of the ball (r = 0.35 m), and every push\ndrives it deeper. So the sim guarantees an escape. If the ball centre stays\ninside a 1.5 m box for **240 ticks (10 s)**, it teleports to the nearest\nneutral drop spot at rest, every robot within 3 m is pushed radially out to\nexactly 3 m, and a `drop` event fires. The drop is inside `gameHash`: it is\npart of the recorded, re-simulated truth, so no policy can defeat it. The\ncontrol layer's boards-escape rule (COACHING.md) is the first line; this is the\nbackstop.\n\n### Shots, saves, passes\n\nA kick whose post-kick velocity ray reaches the opponent goal plane inside the\nmouth is a **shot on target**; a kick whose crossing lands within 4.5 m of the\nmouth is a shot off target. A shot on target whose next touch is by a defending\nrobot inside its own penalty area is a **save**. A kick whose next touch is a\ndifferent robot of the same seat within 96 ticks is a **completed pass**; an\nopponent touch is an **interception**. (Attribution is derived from state\nalone — declared intent lives outside the determinism boundary.)\n\n## Scoring\n\nTeam zero-sum and margin-sensitive; the two seats' scores always sum to 1.0:\n\n```\ngd(seat)    = goals[seat] − goals[1 − seat]\nscore(seat) = 0.5 + 0.5 · clamp(gd(seat) / 3, −1, +1)\n```\n\n**Higher is better.** 3–0 or better = 1.000; 2–0 = 0.833; 1–0 = 0.667; any draw\n= 0.500. `win[seat] = gd(seat) > 0`. A `fault` episode scores 0.5 / 0.5 — an\ninfra fault is nobody's loss.\n\n## End conditions\n\n`results.reason` is a closed enum of three values; `results.endRule` carries the\ndetail.\n\n| `reason` | `endRule` | when |\n|---|---|---|\n| `complete` | `full_time` | 4800 ticks played. The normal ending. |\n| `complete` | `mercy` | goal difference ≥ 5 at a turn boundary. |\n| `deadline` | `wall_clock` | `wallClockBudgetSeconds` (690) elapsed first. The score at that instant stands and the replay is complete up to the stop tick. |\n| `fault` | `sim_fault` | a physics invariant guard tripped. 0.5 / 0.5. |\n| `fault` | `host_error` | an unexpected server-side exception. 0.5 / 0.5. |\n\n### Disconnects\n\nA seat that never connects does **not** end the episode. After\n`lobbyJoinTimeoutTicks` (2400 = 100 s) the no-show is reported to\n`COGAME_PLAYER_FAILURE_URI`, its trio is driven by the `formation` baseline for\nthe whole match, and the match plays to full time. A seat that drops mid-match\nkeeps playing the same way and revives on reconnect. **No failure mode leaves a\nrobot unactuated.**\n\n## Determinism\n\nReplays are re-simulated by the **emscripten/wasm32** build of the same Nim\nmodule the **native amd64** server ran, and their per-tick `gameHash` chain must\nmatch exactly. That is true by construction, not by argument:\n\n* every stored sim field is an explicit `int32` / `bool` / enum — never a bare\n  `int`, which is 64-bit natively and 32-bit under `--cpu:wasm32`;\n* every product or quotient of two sim quantities is taken in `int64` and\n  narrowed with an explicit truncating `div` (Nim's `div` truncates toward zero,\n  so the arithmetic is symmetric under negation — which is what makes the two\n  ends of the pitch exactly fair);\n* there is **no floating point** in `src/cogball/{sim,sim_types,sim_config,`\n  `sim_state,pitch,control,trig}.nim`, grep-enforced by\n  `tests/test_determinism.nim`;\n* trigonometry is a committed literal table (`SinQ12`), the only square root is\n  `isqrt`, and the only atan2 is `bradsOfVectorI` — all integer, all in\n  `src/cogball/trig.nim`;\n* the only randomness is the seeded sim RNG, used for exactly one thing: the\n  kickoff y-jitter.\n\nCI proves the cross-build equality on every push: the `wasm-viewer` job runs\n`node tools/wasm_replay_smoke.cjs dist/static-replay-viewer <fixture> 300`,\nwhich fails if `cogball_mismatch_tick() != -1`.\n\n## Out of scope (v1)\n\nThe 6-seat hero-per-seat variant; raw per-tick actuator control by an external\npolicy; Box2D, joints, polygons, friction cones and ball spin; every soccer rule\nbeyond the goal (throw-ins, corners, offside, fouls, cards, penalties, keeper\nhandling, added time); robot heterogeneity; mid-turn interruption; inter-seat\nchat; player debug-sprite overlays; audio, 3D and camera cuts other than the\nslow-mo goal replay; persistent memory across episodes; campaign mode.\n"
+          }
+        },
         {
           "id": "protocol.md",
           "title": "Wire protocol",
           "content": {
             "type": "text",
-            "value": "# cogball wire protocol\n\nEverything a seat can see, and everything it may send. The authority for the\nruntime contract is `server/cogball/server.py`; this page is the human-readable\nversion of it.\n\n## Runtime contract (Coworld `COGAME_*`)\n\n| variable | meaning |\n| --- | --- |\n| `COGAME_CONFIG_URI` | the episode config JSON (required in episode mode) |\n| `COGAME_RESULTS_URI` | where `results.json` is written |\n| `COGAME_SAVE_REPLAY_URI` | where the replay JSON is written |\n| `COGAME_PLAYER_FAILURE_URI` | where a no-show seat is declared |\n| `COGAME_LOAD_REPLAY_URI` | set ⇒ replay mode: serve a recorded replay, run no episode |\n| `COGAME_HOST` / `COGAME_PORT` | bind address (default `0.0.0.0:8080`) |\n\nRoutes: `GET /healthz`, `GET /player?slot=N&token=T` (websocket),\n`GET /global` (broadcast websocket), `GET /client/global`,\n`GET /client/player`, and in replay mode `GET /replay-data` +\n`GET /client/replay`. A bad slot or token is `403`; a second connection to an\nalready-connected slot is `409`.\n\n## The episode config\n\n```json\n{\"seed\": 2864434397, \"max_ticks\": 7200, \"turn_ticks\": 150,\n \"turn_budget_seconds\": 12, \"tick_deadline_ms\": 1000,\n \"player_connect_timeout_seconds\": 90, \"wall_clock_budget_seconds\": 690,\n \"num_agents\": 2,\n \"players\": [{\"name\": \"Azure\"}, {\"name\": \"Magenta\"}],\n \"tokens\": [\"token-0\", \"token-1\"]}\n```\n\n`seed` may be omitted; the server derives one and records it in the results and\nthe replay. `num_agents`, if present, must equal the seat count.\n\n## What a player sends: one frame, ever\n\nDecisions are made by the **game server** — the hosted Bedrock credential and\nthe `anthropic_api_key` Coworld secret are injected into the game pod — so a\nplayer container is thin. On connect it sends exactly one frame and then only\nreceives:\n\n```json\n{\"type\": \"register\",\n \"prompt\": \"<strategy text, or empty>\",\n \"scripted\": \"formation\" | \"swarm\" | null,\n \"policy\": \"<free label, <= 48 runes>\"}\n```\n\nA non-empty `prompt` makes the seat an **LLM seat**: that text is the policy,\nand the server asks Claude for a directive every turn on the seat's behalf. A\nseat that registers with neither field — or never registers at all, or never\nconnects — plays the `formation` baseline. An over-long `prompt` is truncated\nto 4 000 runes, not rejected; it is never written to the replay or the results.\n\n## What the server sends\n\nOnce per decision turn (every `turn_ticks` = 150 ticks = 5.0 s):\n\n```json\n{\"type\": \"turn\", \"turn\": 7, \"tick\": 1050, \"view\": { … },\n \"directive_source\": \"llm\"}\n```\n\nand at the end, followed by close:\n\n```json\n{\"done\": true, \"result\": { …the results document… }}\n```\n\n`GET /global` is broadcast-only: a status snapshot on connect, a throttled\n`{\"tick\": t}` progress feed, then the same done message.\n\n## The per-seat view\n\nNumbers are rounded to 2 decimals.\n\n```json\n{\"turn\": 7, \"of\": 48, \"clock\": {\"played_s\": 35.0, \"left_s\": 205.0},\n \"score\": {\"you\": 1, \"them\": 0},\n \"you\": {\"alias\": \"Azure\", \"attacking_x\": \"+20\", \"defending_x\": \"-20\"},\n \"pitch\": {\"x_min\": -20, \"x_max\": 20, \"y_min\": -12.5, \"y_max\": 12.5,\n           \"goal_half_width\": 3.5, \"your_penalty_area\": \"x <= -14, |y| <= 7\"},\n \"ball\": {\"pos\": [3.21, -1.04], \"vel\": [4.1, 0.62], \"speed\": 4.15,\n          \"possession\": \"AZ-2\", \"in_your_half\": false},\n \"your_robots\": [{\"id\": \"AZ-1\", \"pos\": [-16.9, 0.4], \"vel\": [0.2, -0.1],\n                  \"facing\": [1.0, 0.0], \"speed\": 0.22, \"kick_ready\": true,\n                  \"dist_to_ball\": 20.1, \"last_role\": \"keeper\"}],\n \"their_robots\": [{\"id\": \"MG-1\", \"pos\": [7.7, 2.1], \"vel\": [-3.0, 0.4],\n                   \"facing\": [-0.99, 0.13], \"speed\": 3.03,\n                   \"dist_to_ball\": 5.6}],\n \"last_turn\": {\"your_kicks\": 2, \"their_kicks\": 1, \"your_shots\": 1,\n               \"their_shots\": 0, \"goals\": [], \"possession_pct_you\": 63},\n \"your_last_directive\": { … or null on turn 0 … }}\n```\n\n**Visible:** the whole physical state (soccer is a perfect-information sport),\nthe score, the clock, the turn index, the seat's own previous directive, and\nlast-turn event counts.\n\n**Hidden:** the opponent's directives, roles, intents, `note`/`say` text and\nprompt — never, not even after the fact; the episode seed; real player names\n(a seat sees only `Azure` / `Magenta` and robot ids); the opponent's policy\nkind; and the future. Spectators see all of it in the replay. That asymmetry\nis deliberate.\n\n## The directive (what a coach replies)\n\n```json\n{\"note\": \"compact, keeper stays home\",\n \"robots\": [{\"id\": \"AZ-1\", \"role\": \"keeper\", \"intent\": \"hold\",\n             \"target\": [-17.0, 0.4], \"pass_to\": null, \"kick\": \"auto\",\n             \"say\": \"holding the arc\"}]}\n```\n\nexactly three entries, one per robot.\n\n| field | legal values | repair when violated |\n| --- | --- | --- |\n| `note` | string, ≤ **160 runes** | truncated to 160 runes |\n| `robots` | exactly the seat's 3 robots | extras dropped; missing ids filled from last turn, else from `formation` |\n| `robots[].id` | `AZ-1..3` / `MG-1..3`, case-insensitive, ≤ 8 runes | unmatched entries assigned by position |\n| `robots[].role` | `keeper` `back` `wing` `striker` | → `wing` |\n| `robots[].intent` | `chase` `intercept` `hold` `shoot` `pass` `clear` `press` | → `chase` |\n| `robots[].target` | `[x, y]`, finite | clamped to the pitch; non-finite/missing → the robot's current position |\n| `robots[].pass_to` | a *teammate* id ≠ self, or null | → null (and `pass` degrades to `shoot`) |\n| `robots[].kick` | `auto` `never` | → `auto` |\n| `robots[].say` | string, ≤ **48 runes** | truncated to 48 runes |\n\nParsing is tolerant: markdown fences are stripped, the outermost balanced\n`{…}` is taken if the model prefixed prose, `robots` may be an object keyed by\nid, and numeric strings are accepted for `target`. Only if no object with at\nleast one usable robot entry can be recovered does the **one** retry fire, and\nthen the `formation` fallback.\n\n**Every string that reaches the replay is truncated on rune (codepoint)\nboundaries, never bytes.** A byte-truncated multi-byte character is exactly\nthe bug that makes replay bytes render in a browser but fail a strict JSON\nparser.\n\n## Timing\n\n| bound | value |\n| --- | --- |\n| decision turn | 150 ticks (5.0 s of sim time), 48 per match |\n| first LLM attempt | 8.0 s |\n| retry | 3.5 s |\n| whole turn (both seats, one batch) | 12.0 s |\n| player connect wait | `player_connect_timeout_seconds` (90 s) |\n| engine hard stop | `wall_clock_budget_seconds` (690 s) → `reason: \"deadline\"` |\n| final done broadcast, per seat | 3.0 s |\n\nBoth seats are queried in **one parallel batch** per turn (a single\n`asyncio.gather` under a single `asyncio.wait_for`), so a match costs 48 × 12 s\nof coaching at worst, not 96 × 12 s. If two more full turn budgets would\noverrun the hard stop, a **budget guard** drops the rest of the match onto the\nscripted layer, so the episode ends `complete`/`full_time` rather than\n`deadline`.\n\n## The results document (closed schema)\n\n```json\n{\"names\": [\"daveey\", \"daveey-1\"], \"aliases\": [\"Azure\", \"Magenta\"],\n \"policy_kinds\": [\"llm\", \"scripted\"], \"scores\": [0.667, 0.333],\n \"win\": [true, false], \"goals\": [1, 0], \"reason\": \"complete\",\n \"end_rule\": \"full_time\", \"winner\": 0, \"final_tick\": 7200, \"final_turn\": 48,\n \"seed\": 2864434397, \"shots\": [7, 4], \"shots_on_target\": [3, 1],\n \"saves\": [1, 3], \"passes_completed\": [9, 5], \"interceptions\": [4, 6],\n \"possession_ticks\": [4120, 3080],\n \"distance_m\": [211.4, 340.2, 298.7, 205.9, 318.0, 331.6],\n \"llm_turns\": [48, 0], \"fallback_turns\": [0, 0],\n \"fallback_causes\": [{\"timeout\": 0, \"parse_error\": 0, \"transport_error\": 0,\n                      \"no_credentials\": 0, \"budget_guard\": 0}, {}]}\n```\n\n`score(seat) = 0.5 + 0.5 · clamp(goal_difference / 3, −1, +1)`, and the two\nseats always sum to exactly 1.0. `reason` is one of `complete`, `deadline`,\n`fault`; `end_rule` carries the detail (`full_time`, `mercy`, `wall_clock`,\n`sim_fault`, `host_error`).\n\n## The replay\n\nUTF-8 JSON, `protocol: \"cogball/v1\"`. `seed` + `first_kickoff_seat` +\n`controls_b64` (tick_count × 18 bytes of quantised `(thrust i8, turn i8,\nkick u8)` per robot) + the pinned physics core reproduce the episode exactly.\n`keyframes` carry the state digest every 30 ticks so a re-simulation can be\nverified without trusting it, and `events` carry the human-readable story:\n`match_start`, `turn_start`, `directive`, `fallback`, `budget_guard`, `kick`,\n`touch`, `shot`, `save`, `pass_completed`, `interception`, `post`, `goal`,\n`kickoff`, `turn_end`, `end`.\n"
+            "value": "# Cogball — wire protocol\n\nTwo protocols matter here: the **player** protocol (what a policy container\nspeaks to the game) and the **global** protocol (what a spectator or the static\nreplay viewer speaks). Both are Sprite v1 binary websocket streams, exactly as\nin the paintbot lineage.\n\n## Runtime contract\n\nThe game container reads and writes the standard `COGAME_*` URIs:\n\n| variable | meaning |\n|---|---|\n| `COGAME_CONFIG_URI` | the episode config JSON (read at startup) |\n| `COGAME_RESULTS_URI` | the results document (written once, at game over) |\n| `COGAME_SAVE_REPLAY_URI` | the `COWLDBAL` replay bytes |\n| `COGAME_LOAD_REPLAY_URI` | a replay to serve instead of playing a match |\n| `COGAME_PLAYER_FAILURE_URI` | `{\"failed_policy_index\": N, \"message\": \"…\"}` |\n| `COGAME_EVENTS_URI` | the tier-2 JSON-lines analysis stream (`file://` only) |\n| `COGAME_HOST` / `COGAME_PORT` | the bind address (default `0.0.0.0:8080`) |\n| `ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY_URI` | the coaching credential |\n\n## Routes\n\n| route | method | purpose |\n|---|---|---|\n| `/healthz` | GET | liveness; returns `healthy` |\n| `/player?slot=N&token=T` | GET (ws) | one seat's stream |\n| `/global` | GET (ws) | the spectator board |\n| `/replay` | GET (ws) | the replay board (replay mode) |\n| `/client/global`, `/client/player` | GET | the bitworld generic clients |\n| `/client/replay` | GET | the designed broadcast client |\n| `/client/league` | GET | the League Replayer shell (embeds the above) |\n| `/client/font.ttf` | GET | the chrome font |\n| `/replay-data` | GET | the current replay bytes |\n\nA bad slot or a token that does not match the configured slot is refused with\n**403 before the websocket upgrade**. A viewer socket that carries player\ncredentials is refused the same way.\n\n## The player protocol\n\n### Registration — the only thing a seat ever sends that matters\n\nOn connect, a seat sends **one Sprite v1 chat message** (`0x81`, u16 length,\nthen the raw payload) carrying:\n\n```json\n{\"type\":\"register\",\n \"prompt\":\"<strategy text or empty>\",\n \"scripted\":\"formation\"|\"swarm\"|null,\n \"policy\":\"<free label>\"}\n```\n\n* A non-empty `prompt` makes the seat an **LLM seat**: the game server sends\n  that text to Claude once per coaching turn.\n* Otherwise `scripted` selects a built-in baseline; an unknown or absent value\n  is `formation`.\n* `policy` is a free label, capped at **48 runes**, recorded in the replay.\n* `prompt` is capped at **4000 runes** at the transport (over-long is\n  truncated, never rejected) and is **never** written to the replay or the\n  results.\n\nThe payload is read WITHOUT an ASCII filter, so a non-ASCII policy label\nsurvives to the replay intact. Registration is re-sent once after the first\nreceived frame, in case the first send raced the slot registration.\n\nThe server **intercepts** the registration: it is consumed, not written to the\nreplay chat stream. A redacted `register` record is written instead. **Any\nother chat text from a player is dropped.**\n\n### Frames\n\nEach seat's websocket receives one binary Sprite v1 message per tick.\n\n**Visible:** the whole pitch and every body — soccer is a perfect-information\nsport, so there is no fog of war; the score; the clock; a self marker on its own\nthree robots; and an invisible `own seat <alias>` marker naming the seat.\n\n**Hidden:** the opponent's directives, roles, intents, `note`/`say` and prompt;\nthe episode seed; **real player names** (board labels carry only `Azure`/\n`Crimson` and `AZ-1..3`/`CR-1..3`); and future ticks.\n\nA seat sends **no inputs** — the server computes every actuator mask — so the\nSprite v1 Ready packet (`0x85`) is legitimate after each received frame and is\nwhat lets `fastMode` pace the match by readiness. (ctf's warning about `0x85`\ncorrupting input timing is about *player* clients whose own inputs are\ndead-reckoned; that hazard does not exist here.)\n\n## The replay bytes\n\nThe replay is the starter's **binary `COWLDBAL`** format — the same format the\nstatic wasm viewer parses. Everything the viewer needs is in the bytes; no\nserver is contacted except S3 for the file.\n\n| content | carries |\n|---|---|\n| header | magic `COWLDBAL`, format version, game name `cogball`, game version `1` |\n| config JSON | seed, `num_agents`, `maxTicks`, `turnTicks`, every physics constant, `players[].name`, `slots[].team`, `fastMode` |\n| joins | per seat: name, slot, token |\n| inputs | per **robot** (0..5), on change: the `uint8` actuator mask — the action log |\n| chats | the `register` / `directive` / `fallback` / `budget_guard` / `result` records |\n| hashes | one `gameHash` per tick — the integrity chain the viewer checks |\n\nMasks are indexed by **robot**, not by roster slot, and a player leaving does\n**not** shift the mask arrays: cogball's six robots are fixed for the whole\nmatch.\n\n### Record vocabulary\n\n| `k` | fields |\n|---|---|\n| `register` | `seat`, `alias`, `policy` (≤48 runes), `kind` (`llm`\\|`scripted`), `baseline` |\n| `directive` | `turn`, `seat`, `alias`, `source` (`llm`\\|`scripted`\\|`fallback`), `latency_ms`, `note`, `robots`:[{`id`,`role`,`intent`,`target`,`pass_to`,`kick`,`say`}] |\n| `fallback` | `turn`, `seat`, `attempt` (1\\|2), `cause`, `detail` (≤200 runes) |\n| `budget_guard` | `turn`, `remaining_s` |\n| `result` | the full results document, written once at game over |\n\nEvery record is capped at **900 runes**, on a rune boundary.\n\n### Reading a replay without Nim\n\n`tools/replay_summary.py` (Python 3 standard library only — no Nim, no Docker)\nprints one strict-UTF-8 JSON object describing a `.bitreplay`:\n\n```bash\npython3 tools/replay_summary.py /tmp/ep.replay | jq .\n```\n\n```json\n{\"protocol\":\"cogball/v1\",\"gameVersion\":\"1\",\"seed\":679961,\n \"names\":[…],\"aliases\":[\"Azure\",\"Crimson\"],\"policyKinds\":[…],\n \"tickCount\":4800,\"directives\":[…],\"fallbacks\":0,\"results\":{…}}\n```\n\n## Derived broadcast events\n\n`stepEvents` derives these from state deltas during playback, so they cost no\nreplay bytes and are identical live and in replay: `phase`, `kick`, `touch`,\n`shot`, `save`, `pass`, `interception`, `goal`, `kickoff`, `drop`, `turn_end`,\n`gameover`. `goal` and `drop` are **beats** — scrubber markers, and the trigger\nfor the slow-mo goal replay. `touch` is throttled to at most one per robot per\n6 ticks.\n\n## Results document\n\nWritten to `COGAME_RESULTS_URI`. It equals the manifest's `results_schema`\nkey for key; that schema is `additionalProperties: false` and the certifier\nrejects any unknown field.\n\n```json\n{\"names\": [\"daveey\", \"daveey-1\"],\n \"scores\": [0.667, 0.333],\n \"win\": [true, false],\n \"team\": [\"azure\", \"crimson\"],\n \"goals\": [2, 1],\n \"shots\": [9, 6],\n \"shotsOnTarget\": [4, 2],\n \"saves\": [1, 3],\n \"possessionTicks\": [2640, 2160],\n \"llmTurns\": [40, 0],\n \"fallbackTurns\": [0, 0],\n \"reason\": \"complete\",\n \"endRule\": \"full_time\",\n \"finalTick\": 4800,\n \"seed\": 679961}\n```\n\n`names` are the **real policy names** (spectator side). `team` carries the\nin-game aliases.\n"
           }
         },
         {
@@ -403,30 +61,301 @@
           "title": "Writing a cogball prompt",
           "content": {
             "type": "text",
-            "value": "# Writing a cogball prompt\n\nA cogball policy is a prompt. You are not writing motor commands; you are\nwriting a **coach**. Every five seconds of match time your prompt, plus the\ncurrent state of the pitch, goes to the model, and the model answers with one\ndirective for all three of your robots. A deterministic controller then\nexecutes that directive at 30 Hz for the next five seconds.\n\nSo the question your prompt has to answer is: *given the ball here and my\nthree robots there, who does what?*\n\n## What the model sees\n\nYour prompt, then a blank line, then the seat's view as JSON: ball position,\nvelocity and speed; every robot's position, velocity, heading, speed and\ndistance to the ball; whether each of your robots' kickers are off cooldown;\nthe score; the clock; last turn's kick/shot counts and possession share; and\nthe directive you played last turn. It sees `Azure` / `Magenta` and robot ids\n`AZ-1..3` / `MG-1..3` — never the real player behind the other seat.\n\n## What it must answer\n\n```json\n{\"note\": \"compact, keeper stays home\",\n \"robots\": [\n   {\"id\": \"AZ-1\", \"role\": \"keeper\", \"intent\": \"hold\", \"target\": [-17, 0.4],\n    \"pass_to\": null, \"kick\": \"auto\", \"say\": \"holding the arc\"},\n   {\"id\": \"AZ-2\", \"role\": \"striker\", \"intent\": \"shoot\", \"target\": [12, 1],\n    \"pass_to\": null, \"kick\": \"auto\", \"say\": \"going for goal\"},\n   {\"id\": \"AZ-3\", \"role\": \"wing\", \"intent\": \"intercept\", \"target\": [6, -5],\n    \"pass_to\": null, \"kick\": \"auto\", \"say\": \"running the channel\"}]}\n```\n\nExactly three entries, one per robot. The system prompt already states the\nschema, so your prompt should spend its words on **tactics**, not on JSON.\n\n## The seven intents, and what the controller actually does with each\n\n| intent | the controller drives the robot to… | use it when |\n| --- | --- | --- |\n| `chase` | the ball itself | you just want a body on it |\n| `intercept` | where the ball *will be* (up to 1.5 s of lead) | a loose ball, a cut-out |\n| `hold` | your `target`, then turns to face the ball | keepers, backs, anyone who must not be dragged out |\n| `shoot` | 0.9 m behind the ball on the line to their goal, then strikes | the ball is in front of goal |\n| `pass` | 0.9 m behind the ball on the line to `pass_to` | you have a free teammate |\n| `clear` | 0.9 m behind the ball on the line up the touchline | the ball is in your own box |\n| `press` | the opponent nearest the ball, plus half a second of lead | you want to deny time, not win the ball |\n\n`target` is used **directly** by `hold`; for every other intent it is a 20 %\nbias on the steering point, which is how you nudge a chaser to favour one side\nof the pitch. `kick: \"never\"` makes a robot shepherd the ball instead of\nstriking it — useful for a robot you want to keep possession with, expensive if\nyou use it on your striker.\n\n## Five things that decide matches\n\n1. **Never leave the goal empty.** One robot on `hold` at roughly\n   `(±17, ball_y / 3)` covers the near post and is worth more than a third\n   attacker. Every strong cogball prompt names a keeper every single turn.\n2. **Robots are car-like.** Thrust acts along the heading and lateral velocity\n   is scrubbed off by grip, so a robot that has to turn 180° loses about a\n   second. Sending the *nearest* robot at the ball beats sending the *best*\n   one.\n3. **Rotate roles by distance, not by name.** The robot nearest the ball\n   should be the one attacking it this turn, whichever id that is. Say so in\n   the prompt: \"the nearest robot always attacks, the deepest always keeps\".\n4. **A shot from outside 12 m is a giveaway.** The ball loses most of its pace\n   in about three seconds; a long shot arrives slowly and hands over\n   possession. Prefer `pass` to a supporting robot.\n5. **Five seconds is a long time.** Whatever you order will still be running\n   five seconds from now. Prefer intents that track the ball live (`chase`,\n   `intercept`, `shoot`, `press`) for the robot near the action, and `hold`\n   with an explicit target for the robots that should stay where they are.\n\n## Things that will not work\n\n- Micro-managing motors. There is no thrust or steering field; the controller\n  owns that.\n- Referring to \"the last time we played\" — nothing carries between episodes.\n- Talking to the other seat. `note` and `say` are one-way, into the replay\n  feed. (They are the only thing a spectator sees of your reasoning, so a good\n  `note` is genuinely worth writing.)\n- Asking for a formation by name. Say who holds where and who goes for the\n  ball; the schema has no formation field.\n\n## The two shipped champions\n\n`cogball-total` plays total football: always a keeper, always a presser, a\nthird robot running ahead of the ball into space, roles rotating by distance,\nand a preference for the pass over the low-percentage shot.\n\n`cogball-counter` plays the counter: two robots behind the ball line holding\nstation, one pressing; the moment its team wins the ball, the presser shoots,\nthe back breaks wide, and only the keeper stays home. It never sends all three\nrobots past halfway.\n\nBoth are pure prompts against the same image and the same controller. If you\nwant to beat them, the fastest lever is not a cleverer shape — it is being\nmore decisive about *who* attacks and *who* stays.\n"
+            "value": "# Writing a cogball prompt\n\nA cogball policy is a **prompt**. You do not drive motors, and you do not write\ncode: you coach. Every five seconds of match time the game server sends your\nprompt, plus the state of the pitch, to Claude and asks for one JSON directive\nfor all three of your robots. A deterministic control layer then executes that\ndirective for the next five seconds.\n\nForty turns, one directive each. That is the whole game from your side.\n\n## What your coach is told\n\nThe system prompt is fixed and identical for both champions. Your prompt is\nappended under a **GUIDANCE FROM YOUR OPERATOR** heading, then the seat's view\nof the pitch:\n\n```json\n{\"turn\": 7, \"of\": 40, \"clock\": {\"played_s\": 35.0, \"left_s\": 165.0},\n \"score\": {\"you\": 1, \"them\": 0},\n \"you\": {\"alias\": \"Azure\", \"attacking_x\": \"+20\", \"defending_x\": \"-20\"},\n \"pitch\": {\"x_min\": -20, \"x_max\": 20, \"y_min\": -12.5, \"y_max\": 12.5,\n           \"goal_half_width\": 3.5, \"your_penalty_area\": \"x <= -14, |y| <= 7\",\n           \"walled\": true},\n \"ball\": {\"pos\": [3.21, -1.04], \"vel\": [4.10, 0.62], \"speed\": 4.15,\n          \"possession\": \"AZ-2\", \"in_your_half\": false, \"on_boards\": false},\n \"your_robots\": [{\"id\": \"AZ-1\", \"pos\": [-16.9, 0.4], \"vel\": [0.2, -0.1],\n                  \"facing\": [1.0, 0.0], \"speed\": 0.22, \"kick_ready\": true,\n                  \"dist_to_ball\": 20.1, \"last_role\": \"keeper\"}, \"… 3 …\"],\n \"their_robots\": [{\"id\": \"CR-1\", \"pos\": [7.7, 2.1], \"vel\": [-3.0, 0.4],\n                   \"facing\": [-0.99, 0.13], \"speed\": 3.03,\n                   \"dist_to_ball\": 5.6}, \"… 3 …\"],\n \"last_turn\": {\"your_kicks\": 2, \"their_kicks\": 1, \"your_shots\": 1,\n               \"their_shots\": 0, \"possession_pct_you\": 63,\n               \"goals\": [{\"tick\": 890, \"by\": \"AZ-3\", \"for\": \"you\"}]},\n \"your_last_directive\": \"… what you played last turn, or null on turn 0 …\"}\n```\n\nEverything is in **view coordinates**: metres from the centre spot. Your own\ngoal and the one you attack are named for you every turn, so a prompt never has\nto remember which side it is on.\n\n## The directive\n\n```json\n{\"note\": \"compact, keeper stays home\",\n \"robots\": [{\"id\": \"AZ-1\", \"role\": \"keeper\", \"intent\": \"hold\",\n             \"target\": [-17.0, 0.4], \"pass_to\": null,\n             \"kick\": \"auto\", \"say\": \"holding the arc\"}, \"… 3 …\"]}\n```\n\n| field | legal values | repaired to |\n|---|---|---|\n| `note` | ≤ 160 runes | truncated |\n| `robots` | exactly your three robots | extras dropped; missing filled from last turn, else from `formation` |\n| `id` | `AZ-1..3` / `CR-1..3`, case-insensitive | unmatched ids assigned by position |\n| `role` | `keeper` `back` `wing` `striker` | `wing` |\n| `intent` | `chase` `intercept` `hold` `shoot` `pass` `clear` `press` | `chase` |\n| `target` | `[x, y]` metres | clamped into the pitch; missing → the robot's current position |\n| `pass_to` | a *teammate* id ≠ self | `null` (and `pass` degrades to `shoot`) |\n| `kick` | `auto` `never` | `auto` |\n| `say` | ≤ 48 runes | truncated |\n\nParsing is deliberately forgiving: markdown fences, a prose prefix, an\nid-keyed `robots` object, numeric strings and unknown enums all repair. Only\nwhen no usable robot entry can be recovered at all does the turn retry once,\nand then fall back to the `formation` baseline.\n\n## What each intent actually does\n\nThe control layer is the same code for every policy, so two prompts are\nstrictly comparable.\n\n| intent | the robot… |\n|---|---|\n| `chase` | drives at the ball |\n| `intercept` | drives to where the ball will be (lead time from the closing speed) |\n| `hold` | holds `target` and turns to face the ball once it arrives |\n| `shoot` | lines up 0.9 m behind the ball on the goal side and strikes it |\n| `pass` | the same, aimed at `pass_to`'s leading position |\n| `clear` | the same, aimed away from your own goal toward a touchline |\n| `press` | shadows the opponent nearest the ball |\n\n`target` is used **directly** by `hold` and as a 20 % bias by everything else,\nso it is a useful nudge even on `chase`. `kick: \"never\"` makes a robot shepherd\nthe ball instead of striking it — useful for a keeper you want between the ball\nand the goal rather than swinging at it.\n\n**The boards-escape rule overrides you.** When the ball hugs a wall outside the\ngoal-mouth corridor, the closest robot of your trio aims its kick back toward\nthe middle and kicks even if you said `never`; its two teammates are pushed\n3 m off the boards so a whole trio cannot pile into one corner. The sim also\ndrops the ball on a neutral spot if it has not moved 1.5 m in 10 s. You cannot\nturn either off, and you should not want to: a buried ball is a 0–0.\n\n## What actually wins\n\nThings that show up in the replays:\n\n* **Never leave your goal empty.** One robot with `role: \"keeper\"` and\n  `intent: \"hold\"` on the arc ~3 m in front of your line, with its `y` tracking\n  about a third of the ball's `y`, is worth more than a third attacker.\n* **Rotate by distance, not by name.** The nearest robot attacks; the deepest\n  keeps. Re-assign the roles every turn from `dist_to_ball`.\n* **Shoot from inside 12 m, pass from outside it.** A long shot is a free\n  clearance for the other side; a pass to a robot already in space is not.\n* **Use the whole 5 seconds.** A directive is a *plan*, not a twitch. Sending\n  three robots at the ball wastes the turn — that is exactly what the `swarm`\n  baseline does, and it loses.\n* **Watch `on_boards`.** When it is true, send exactly one robot at the ball and\n  keep the others in open space to collect the clearance.\n* **Say something.** `note` and `say` appear in the broadcast feed. They cost\n  nothing and they are how a spectator sees you playing.\n\n## Fielding a policy\n\nReuse the shipped image and set one environment variable:\n\n```bash\ncoworld upload-policy coworld-cogball:latest \\\n  --name my-cogball \\\n  --run /bin/cogball-player \\\n  --secret-env PLAYER_PROMPT=\"<your strategy>\"\n```\n\n`PLAYER_SCRIPTED=formation` or `PLAYER_SCRIPTED=swarm` fields a built-in\nbaseline instead — the same directive shape, no LLM, microseconds per turn.\n\n## Degrading\n\nEvery wait is bounded. Both seats' calls go out as **one parallel batch** per\nturn with a 6.0 s deadline; anything that timed out, errored, returned non-JSON\nor returned no usable robot entry is retried **once** as a single batch with a\n2.5 s deadline, all inside a 9.0 s monotonic per-turn cap. Two consecutive\nfailures play the `formation` directive and write a `fallback` record naming the\ncause. If the wall clock gets close to the budget, a `budget_guard` record fires\nand the rest of the match runs on the scripted layer, so the episode ends\n`complete/full_time` rather than `deadline`.\n\nNone of that is a punishment: it is why a slow model never costs you the match.\n"
           }
         }
       ]
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens",
+        "players"
+      ],
+      "properties": {
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "players": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "slots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "team": {
+                "type": "string",
+                "enum": [
+                  "azure",
+                  "crimson"
+                ]
+              }
+            }
+          }
+        },
+        "closedRoster": {
+          "type": "boolean",
+          "default": false
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "num_agents": {
+          "type": "integer",
+          "default": 2,
+          "description": "seats; one seat is one full trio of three robots"
+        },
+        "minPlayers": {
+          "type": "integer",
+          "default": 2
+        },
+        "maxTicks": {
+          "type": "integer",
+          "default": 4800,
+          "description": "24 ticks/second; 4800 = 3:20 of soccer"
+        },
+        "maxGames": {
+          "type": "integer",
+          "default": 1
+        },
+        "turnTicks": {
+          "type": "integer",
+          "default": 120,
+          "description": "ticks between coaching turns (5.0 s)"
+        },
+        "turnBudgetMs": {
+          "type": "integer",
+          "default": 9000
+        },
+        "attempt1Ms": {
+          "type": "integer",
+          "default": 6000
+        },
+        "retryMs": {
+          "type": "integer",
+          "default": 2500
+        },
+        "wallClockBudgetSeconds": {
+          "type": "integer",
+          "default": 690,
+          "description": "engine hard stop; yields reason 'deadline'"
+        },
+        "lobbyJoinTimeoutTicks": {
+          "type": "integer",
+          "default": 2400
+        },
+        "startWaitTicks": {
+          "type": "integer",
+          "default": 24
+        },
+        "gameOverTicks": {
+          "type": "integer",
+          "default": 120
+        },
+        "mercyGoalDiff": {
+          "type": "integer",
+          "default": 5
+        },
+        "stalemateTicks": {
+          "type": "integer",
+          "default": 240,
+          "description": "parked-ball ticks before the neutral drop"
+        },
+        "fastMode": {
+          "type": "boolean",
+          "default": true
+        },
+        "showPlayerLabels": {
+          "type": "boolean",
+          "default": false
+        },
+        "speed": {
+          "type": "integer",
+          "default": 1
+        },
+        "model": {
+          "type": "string",
+          "default": "claude-haiku-4-5-20251001"
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "default": 900
+        },
+        "kickImpulse": {
+          "type": "integer",
+          "default": 375000,
+          "description": "micrometres per tick added along the heading"
+        },
+        "robotMaxSpeed": {
+          "type": "integer",
+          "default": 291600
+        },
+        "ballMaxSpeed": {
+          "type": "integer",
+          "default": 1041600
+        }
+      }
+    },
+    "results_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "names",
+        "scores",
+        "win",
+        "team",
+        "goals",
+        "reason",
+        "endRule"
+      ],
+      "properties": {
+        "names": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "string"
+          }
+        },
+        "scores": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "number"
+          }
+        },
+        "win": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "boolean"
+          }
+        },
+        "team": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "string"
+          }
+        },
+        "goals": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "shots": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "shotsOnTarget": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "saves": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "possessionTicks": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "llmTurns": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "fallbackTurns": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "deadline",
+            "fault"
+          ]
+        },
+        "endRule": {
+          "type": "string",
+          "enum": [
+            "full_time",
+            "mercy",
+            "wall_clock",
+            "sim_fault",
+            "host_error"
+          ]
+        },
+        "finalTick": {
+          "type": "integer"
+        },
+        "seed": {
+          "type": "integer"
+        }
+      }
     }
   },
   "player": [
     {
       "id": "baseline",
-      "name": "formation",
+      "name": "Cogball Formation Baseline",
       "type": "player",
-      "description": "The bundled certification player: keeper on the goal arc, striker on the ball, third robot shuttling between cover and the channel. Pure scripted logic, no LLM, so certification completes offline in seconds.",
-      "image": "{{PLAYER_IMAGE}}",
+      "image": "{{COGBALL_IMAGE}}",
       "run": [
         "/bin/cogball-player"
       ],
       "env": {
         "PLAYER_SCRIPTED": "formation"
       },
-      "source_url": "https://github.com/Metta-AI/cogame-cogball/tree/main/players",
+      "source_url": "https://github.com/Metta-AI/cogame-cogball/tree/main",
       "resources": {
         "requests": {
-          "cpu": "250m",
-          "memory": "256Mi"
+          "cpu": "100m",
+          "memory": "64Mi"
         },
         "limits": {
           "cpu": "1"
@@ -437,46 +366,78 @@
   "variants": [
     {
       "id": "default",
-      "name": "Match (2 seats x 3 robots, 4:00)",
-      "description": "The full match: 7200 ticks, 48 decision turns.",
+      "name": "Match (2 seats x 3 robots, 3:20)",
       "game_config": {
         "players": [
           {
             "name": "Azure"
           },
           {
-            "name": "Magenta"
+            "name": "Crimson"
+          }
+        ],
+        "slots": [
+          {
+            "team": "azure"
+          },
+          {
+            "team": "crimson"
           }
         ],
         "num_agents": 2,
-        "max_ticks": 7200,
-        "turn_ticks": 150,
-        "turn_budget_seconds": 12,
-        "tick_deadline_ms": 1000,
-        "player_connect_timeout_seconds": 90,
-        "wall_clock_budget_seconds": 690
+        "minPlayers": 2,
+        "maxTicks": 4800,
+        "maxGames": 1,
+        "turnTicks": 120,
+        "turnBudgetMs": 9000,
+        "attempt1Ms": 6000,
+        "retryMs": 2500,
+        "wallClockBudgetSeconds": 690,
+        "lobbyJoinTimeoutTicks": 2400,
+        "startWaitTicks": 24,
+        "gameOverTicks": 120,
+        "mercyGoalDiff": 5,
+        "stalemateTicks": 240,
+        "fastMode": true,
+        "showPlayerLabels": false
       }
     },
     {
       "id": "sprint",
-      "name": "Sprint (2 seats x 3 robots, 2:00)",
-      "description": "Half-length match for cheap ladder rounds; same two seats, same three robots each, only the clock changes.",
+      "name": "Sprint (2 seats x 3 robots, 1:40)",
       "game_config": {
         "players": [
           {
             "name": "Azure"
           },
           {
-            "name": "Magenta"
+            "name": "Crimson"
+          }
+        ],
+        "slots": [
+          {
+            "team": "azure"
+          },
+          {
+            "team": "crimson"
           }
         ],
         "num_agents": 2,
-        "max_ticks": 3600,
-        "turn_ticks": 150,
-        "turn_budget_seconds": 12,
-        "tick_deadline_ms": 1000,
-        "player_connect_timeout_seconds": 90,
-        "wall_clock_budget_seconds": 400
+        "minPlayers": 2,
+        "maxTicks": 2400,
+        "maxGames": 1,
+        "turnTicks": 120,
+        "turnBudgetMs": 9000,
+        "attempt1Ms": 6000,
+        "retryMs": 2500,
+        "wallClockBudgetSeconds": 400,
+        "lobbyJoinTimeoutTicks": 2400,
+        "startWaitTicks": 24,
+        "gameOverTicks": 120,
+        "mercyGoalDiff": 5,
+        "stalemateTicks": 240,
+        "fastMode": true,
+        "showPlayerLabels": false
       }
     }
   ],
@@ -495,17 +456,27 @@
           "name": "Azure"
         },
         {
-          "name": "Magenta"
+          "name": "Crimson"
+        }
+      ],
+      "slots": [
+        {
+          "team": "azure"
+        },
+        {
+          "team": "crimson"
         }
       ],
       "num_agents": 2,
-      "seed": 42,
-      "max_ticks": 900,
-      "turn_ticks": 150,
-      "turn_budget_seconds": 12,
-      "tick_deadline_ms": 1000,
-      "player_connect_timeout_seconds": 60,
-      "wall_clock_budget_seconds": 180
+      "minPlayers": 2,
+      "seed": 679961,
+      "maxTicks": 1200,
+      "maxGames": 1,
+      "turnTicks": 120,
+      "turnBudgetMs": 9000,
+      "wallClockBudgetSeconds": 180,
+      "lobbyJoinTimeoutTicks": 1440,
+      "fastMode": true
     }
   }
 }

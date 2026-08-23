@@ -1,7 +1,38 @@
+# Ignore extensionless files by default: the repo's own extensionless build
+# products (bin/cogball, bin/cogball-player) must never be committed, and the
+# starter's rule catches them without a per-name list.
+*
+!*/
+!*.*
+!LICENSE
+!Dockerfile
+!Dockerfile.replay-viewer
+
+# Ignore hidden files, but not the license or the workflows.
+.*
+!.github/
+!.github/**
+!.gitignore
+!.dockerignore
+
+# Normal ignores.
+# nim.cfg pins the AUTHOR's package paths and is wrong on every other host;
+# the Dockerfile and CI regenerate it from the container's package tree.
+nim.cfg
+*.exe
+nimcache
+*.pdb
+*.ilk
+*.out
+out/
+tmp/
 build/
+bin/
 dist/
-viewer/dist/
-.venv/
-__pycache__/
-*.pyc
-.pytest_cache/
+
+# Build products of the replay-viewer bundle.
+replay-viewer/dist/
+
+# Local recordings and scratch.
+*.log
+.scan/
