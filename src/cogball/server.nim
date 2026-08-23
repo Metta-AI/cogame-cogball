@@ -359,10 +359,12 @@ proc runFrameLimiter(
     slept = true
   previousTick = getMonoTime()
 
-proc declarePlayerFailure(slot: int, message: string) =
+proc declarePlayerFailure*(slot: int, message: string) =
   ## Publishes the game-declared terminal player failure the platform runner
   ## polls for, so a lobby no-show is charged to the seat that caused it
   ## instead of poisoning the whole episode unattributed. Best-effort.
+  ## Exported so tests/test_engine.nim can drive it against a real
+  ## file:// target and assert the JSON shape the runner polls for.
   try:
     writeCogameEnv(
       "COGAME_PLAYER_FAILURE_URI",

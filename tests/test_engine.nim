@@ -8,6 +8,7 @@
 import std/[json, monotimes, os, strutils]
 import lib/helpers
 import cogball/llm
+import cogball/server
 
 
 type
@@ -382,6 +383,77 @@ proc hostErrorIsAReachableEnding() =
     "the artifacts must be written before the exception is re-raised"
   report "fault/host_error is reachable and writes artifacts before re-raising"
 
+proc neverConnectingSeatIsReportedAndPlaysOn() =
+  ## A seat that never connects does NOT end the episode: after
+  ## lobbyJoinTimeoutTicks the no-show is reported to COGAME_PLAYER_FAILURE_URI,
+  ## its trio is driven by `formation` for the whole match, and the match
+  ## reaches full time. Nothing exercised declarePlayerFailure before, so the
+  ## JSON shape the platform runner polls for was never asserted.
+  let path = tempPath("player-failure.json")
+  removeFile(path)
+  putEnv("COGAME_PLAYER_FAILURE_URI", "file://" & path)
+  defer:
+    delEnv("COGAME_PLAYER_FAILURE_URI")
+    removeFile(path)
+
+  var config = testConfig(maxTicks = 600)
+  config.lobbyJoinTimeoutTicks = 10
+  var sim = initSimServer(config)
+  sim.gameEventLoggingEnabled = false
+  discard sim.addPlayer("azure-policy", 0, "t0")   ## only ONE seat connects.
+  var lobbyTicks = 0
+  while not sim.lobbyJoinTimedOut() and lobbyTicks < 200:
+    sim.stepIdle()
+    inc lobbyTicks
+  doAssert sim.lobbyJoinTimedOut(), "the lobby timeout never fired"
+  doAssert sim.phase == Lobby, "the sim ended the episode by itself"
+
+  let stuck = sim.nextPlayerSlot()
+  doAssert stuck == 1, "the stuck slot is not the next open seat"
+  declarePlayerFailure(stuck, "player slot 1 never joined the lobby")
+  doAssert fileExists(path),
+    "no player-failure document was published to COGAME_PLAYER_FAILURE_URI"
+  let failure = parseJson(readFile(path))
+  doAssert failure["failed_policy_index"].getInt == 1,
+    "the failure was charged to the wrong seat: " & $failure
+  doAssert failure["message"].getStr().len > 0, "the failure carries no reason"
+
+  # ...and the match still plays, on the scripted layer, to full time.
+  sim.startGame()
+  var directives: array[Seat, Directive]
+  var prev = newSeq[InputState](RobotCount)
+  var guard = 0
+  while sim.phase != GameOver and guard < config.maxTicks * 3:
+    inc guard
+    if sim.phase == Playing:
+      let elapsed = sim.tickCount - sim.gameStartTick
+      if elapsed mod sim.turnTicks() == 0 or
+          not (sim.hasDirective[Azure] and sim.hasDirective[Crimson]):
+        let turn = elapsed div sim.turnTicks()
+        for seat in Seat:
+          directives[seat] = sim.baselineDirective(seat, "formation", turn)
+          sim.activeDirective[seat] = directives[seat]
+          sim.hasDirective[seat] = true
+    let masks = sim.compileMasks(sim.activeDirective)
+    var inputs = newSeq[InputState](RobotCount)
+    for i in 0 ..< RobotCount:
+      inputs[i] = decodeInputMask(masks[i])
+    sim.step(inputs, prev)
+    prev = inputs
+  doAssert sim.phase == GameOver, "the match never ended"
+  doAssert sim.endReason == reasonComplete,
+    "a lobby no-show ended the episode " & reasonText(sim.endReason)
+  doAssert sim.endRule == erFullTime,
+    "expected full_time, got " & endRuleText(sim.endRule)
+  # The absent seat's trio was actuated the whole way, not left inert.
+  var moved = 0
+  for i in 0 ..< RobotCount:
+    if sim.robots[i].distanceUm > 0:
+      inc moved
+  doAssert moved == RobotCount,
+    "only " & $moved & " of six robots moved; a trio went inert"
+  report "a never-connecting seat is declared and the match reaches full_time"
+
 proc seatsAlwaysScoreToOne() =
   for a in 0 .. 6:
     for b in 0 .. 6:
@@ -438,6 +510,7 @@ when isMainModule:
   scriptedSeatsNeverCallOut()
   mercyAndWallClock()
   hostErrorIsAReachableEnding()
+  neverConnectingSeatIsReportedAndPlaysOn()
   seatsAlwaysScoreToOne()
   disconnectKeepsPlaying()
   echo "test_engine: all good"
