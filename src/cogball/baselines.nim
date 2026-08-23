@@ -84,11 +84,8 @@ proc formationDirective*(sim: SimServer, seat: Seat, turn: int): Directive =
     base = firstRobotOf(seat)
     keeper = sim.deepestRobot(seat)
     striker = sim.closestToBall(seat, keeper)
-  var third = -1
-  for slot in 0 ..< RobotsPerSeat:
-    let i = base + slot
-    if i != keeper and i != striker:
-      third = i
+  # The third robot is reached by elimination in the loop below (the `else`
+  # branch), so it needs no separate search.
   for slot in 0 ..< RobotsPerSeat:
     let i = base + slot
     var order = RobotOrder(kick: kickAuto, passTo: -1)
@@ -139,7 +136,6 @@ proc formationDirective*(sim: SimServer, seat: Seat, turn: int): Directive =
           WorldH - 1_000_000'i32)
         order.say = "running the channel"
     result.robots[slot] = order
-  discard third
 
 proc swarmDirective*(sim: SimServer, seat: Seat, turn: int): Directive =
   ## Everyone chases. The deepest robot minds the goal only while the ball is
