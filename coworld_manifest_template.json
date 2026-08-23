@@ -1,15 +1,8 @@
 {
   "game": {
     "name": "cogball",
-    "display_name": "Cogball",
+    "owner": "daveey@gmail.com",
     "description": "3v3 robot soccer in a continuous 2D physics world. A policy is just a prompt: every five seconds you issue ONE directive for all three of your robots and a deterministic controller executes it.",
-    "tags": [
-      "soccer",
-      "physics",
-      "team",
-      "continuous",
-      "llm"
-    ],
     "runnable": {
       "type": "game",
       "image": "{{COGBALL_IMAGE}}",
@@ -339,10 +332,18 @@
       }
     }
   },
+  "tags": [
+    "soccer",
+    "physics",
+    "team",
+    "continuous",
+    "llm"
+  ],
   "player": [
     {
       "id": "baseline",
       "name": "Cogball Formation Baseline",
+      "description": "The bundled certification seat: registers as the scripted `formation` baseline (one keeper on the goal arc, the nearest robot on the ball, the third in the channel) so an episode always completes without LLM credentials.",
       "type": "player",
       "image": "{{COGBALL_IMAGE}}",
       "run": [
@@ -367,6 +368,7 @@
     {
       "id": "default",
       "name": "Match (2 seats x 3 robots, 3:20)",
+      "description": "The full match: two seats of three robots each, 4800 ticks (3:20) played as 40 coaching turns of 5 s.",
       "game_config": {
         "players": [
           {
@@ -405,6 +407,7 @@
     {
       "id": "sprint",
       "name": "Sprint (2 seats x 3 robots, 1:40)",
+      "description": "The short match: the same two seats of three robots, 2400 ticks (1:40) played as 20 coaching turns of 5 s.",
       "game_config": {
         "players": [
           {
