@@ -11,25 +11,40 @@ import
   std/strutils,
   sim, directives
 
-## The tuning constants are `{.intdefine.}` so a grid harness can sweep them
+## The tuning constants are `{.intdefine.}` so the grid harness can sweep them
 ## from the command line (`-d:CogballKeeperArc=2500000`) without editing the
-## source; the values here are the ones that came out of that sweep.
+## source. The harness is `tools/tune_baselines.{nim,sh}` and every value below
+## is the winner of a committed, reproducible sweep: 48 formation-vs-swarm
+## matches per row, both sides played. The full tables — including the two
+## places these numbers disagree with the design note, and a disjoint-seed
+## holdout that says how much of each margin is noise — are in
+## docs/tuning/baseline-grid.md. Do not change one of these without re-running
+## the sweep and updating that file.
 const
   KeeperArc* {.intdefine: "CogballKeeperArc".} = 2_000_000
-    ## micrometres in front of the own goal line. Swept: 2 m beats 3 m and 4 m
-    ## against `swarm` over 48 matches (both sides played), because a keeper
-    ## further out is a keeper the second attacker walks around.
+    ## micrometres in front of the own goal line. Swept 1/1.5/2/3/4 m: 2 m
+    ## wins on both seed lists (63/96 and 61/96) and is the only value with no
+    ## goalless match on either, because a keeper further out is a keeper the
+    ## second attacker walks around and a keeper on the line concedes the
+    ## rebound. The design note's 3 m loses on both lists.
   KeeperYSpan* {.intdefine: "CogballKeeperYSpan".} = 2_600_000
   StrikerRange* {.intdefine: "CogballStrikerRange".} = 9_000_000
     ## how close the ball has to be, in its OWN half, before the nearest robot
-    ## strikes instead of merely chasing. Swept: 9 m beats 6 m — hesitating at
-    ## 6 m hands the loose ball to whoever is already running.
+    ## strikes instead of merely chasing. Swept 4/6/9/12/15/20/40 m: 9 m wins
+    ## the default list (63/96 vs 6 m's 58/96) and is never the worst of
+    ## 6/9/12 on either list. The 6-to-12 m band is inside the seed noise —
+    ## see the holdout table — which is exactly why the number and its
+    ## uncertainty are both written down.
   BackPull* {.intdefine: "CogballBackPull".} = 1_500_000
+    ## Swept 0/1.5/3 m: 1.5 m wins 63/96 against 50 and 56.
   WingLead* {.intdefine: "CogballWingLead".} = 7_000_000
+    ## Swept 4/7/10 m: 7 m wins 63/96 against 60 and 48.
   WingWide* {.intdefine: "CogballWingWide".} = 5_000_000
+    ## Swept 2.5/5/7.5 m: 5 m wins 63/96 against 49 and 57.
   SupportAlwaysRuns* {.intdefine: "CogballSupportAlwaysRuns".} = 0
     ## 1 = the third robot runs the channel even while the ball is in its own
-    ## half, instead of shielding the middle.
+    ## half, instead of shielding the middle. Swept: shielding wins 63/96
+    ## against 50/96.
 
 proc ballInOwnHalf*(sim: SimServer, seat: Seat): bool {.inline.} =
   if attackDir(seat) > 0: sim.ball.x < CentreX else: sim.ball.x > CentreX

@@ -1,7 +1,7 @@
 ## Bounded-orders / legality assertion on the scripted baselines, plus the
 ## round-1 corner regression, pinned.
 
-import std/[random, unicode]
+import std/[os, random, strutils, unicode]
 import lib/helpers
 
 proc validate(sim: SimServer, seat: Seat, directive: Directive, what: string) =
@@ -154,6 +154,30 @@ proc goalsHappenAcrossSeeds() =
     $goalless & " of " & $total & " scripted matches ended goalless"
   report "no scripted match across six seeds ends goalless"
 
+proc theGridHarnessIsCommitted() =
+  ## Acceptance checklist item 7: "the baseline's parameters were tuned with a
+  ## grid harness, not guessed". A doc comment claiming a sweep is not a
+  ## harness -- the runner, the sweep loop and the results have to be in the
+  ## tree, or the claim is unfalsifiable.
+  doAssert fileExists("tools/tune_baselines.nim"), "the sweep runner is gone"
+  doAssert fileExists("tools/tune_baselines.sh"), "the sweep loop is gone"
+  doAssert fileExists("docs/tuning/baseline-grid.md"),
+    "the recorded sweep results are gone"
+  let results = readFile("docs/tuning/baseline-grid.md")
+  # Every swept constant must appear in the results, so adding a knob without
+  # measuring it fails here.
+  for define in ["CogballKeeperArc", "CogballKeeperYSpan",
+                 "CogballStrikerRange", "CogballBackPull", "CogballWingLead",
+                 "CogballWingWide", "CogballSupportAlwaysRuns"]:
+    doAssert readFile("src/cogball/baselines.nim").contains(define),
+      define & " is no longer an intdefine the harness can sweep"
+  for define in ["CogballKeeperArc", "CogballStrikerRange", "CogballBackPull",
+                 "CogballWingLead", "CogballWingWide",
+                 "CogballSupportAlwaysRuns"]:
+    doAssert results.contains(define),
+      "docs/tuning/baseline-grid.md records no sweep for " & define
+  report "the grid harness, its sweep loop and its recorded results are committed"
+
 when isMainModule:
   echo "test_baselines"
   boundedOrders()
@@ -162,4 +186,5 @@ when isMainModule:
   swarmRolesAreFixed()
   formationBeatsSwarm()
   goalsHappenAcrossSeeds()
+  theGridHarnessIsCommitted()
   echo "test_baselines: all good"

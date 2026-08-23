@@ -104,6 +104,25 @@ for exactly this reason. If you find yourself wanting `intent` inside
   the container's package tree because a committed `nim.cfg` pins the author's
   machine paths and is wrong on every other host.
 
+## The baseline constants come from a committed sweep, not from the note
+
+`src/cogball/baselines.nim`'s tuning constants are `{.intdefine.}` and every
+one of them is the winner of a run of `tools/tune_baselines.sh` — 48
+formation-vs-swarm matches per candidate, both sides played, full 4800-tick
+matches through the real control layer. The tables live in
+[docs/tuning/baseline-grid.md](docs/tuning/baseline-grid.md).
+
+Two of them disagree with the v2 design note on purpose. The note quotes a 3 m
+keeper arc and a 6 m striker range; those were design-time estimates, written
+before anything could be played, and the harness says 2 m and 9 m. The note's
+*shape* — who keeps, who strikes, who supports — is unchanged; only the
+numbers inside it were settled by measurement. The note's `back` target is a
+third such case, recorded in the same file with its measurement.
+
+**Changing one of these numbers means re-running the sweep and updating that
+file in the same commit.** A tuning constant with no run behind it is a guess
+wearing an `{.intdefine.}`.
+
 ## Interaction radii must be derived from the art
 
 Paintbot learned this three times on its heart pickup: a body's SIM radius and
