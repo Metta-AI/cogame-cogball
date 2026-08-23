@@ -194,6 +194,14 @@ proc kickoffReset*(sim: var SimServer, restartSeat: int32) =
 
 proc neutralDrop(sim: var SimServer) =
   ## The corner-stalemate cure, INSIDE the sim so no policy can defeat it.
+  ##
+  ## A drop is a RESTART, so it clears the possession chain (`lastTouch`,
+  ## `prevTouch`, `pendingShot`, `pendingPass`) as well as moving the bodies:
+  ## otherwise a pass, an interception or a save would be credited across it,
+  ## to a touch made ten seconds ago at the other end of the pitch. The anchor
+  ## moves to the drop spot too, or the counter would be measured against the
+  ## box the ball was just teleported out of and would re-arm at once. All of
+  ## it is inside gameHash. `kickoffReset` clears the same set.
   let spot = nearestDropSpot(sim.ball.x, sim.ball.y)
   sim.ball = Ball(x: spot.x, y: spot.y, vx: 0, vy: 0)
   for i in 0 ..< RobotCount:

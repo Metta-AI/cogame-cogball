@@ -144,3 +144,29 @@ The one thing it did affect is now fixed: `initSimServer` clears
 `lastKickoffTick` after the construction-time reset, so the placement that
 happens before the match exists does not count as a kickoff for the broadcast
 beat list.
+
+---
+
+## The neutral drop clears more state than the note enumerates
+
+**Note** (§Neutral drop): "the ball teleports to the nearest of the four
+neutral drop spots with zero velocity, every robot within 3 000 000 µm of that
+spot is pushed radially out to exactly 3 000 000 µm with zero velocity,
+`stalemateTicks` resets, and a `drop` event is emitted."
+
+**Code** (`src/cogball/sim.nim`, `neutralDrop`): all of that, plus
+`lastTouch`, `prevTouch`, `pendingShot` and `pendingPass` are reset, and the
+stalemate anchor is moved to the drop spot.
+
+**Why.** A drop is a restart, and those four fields are the possession chain
+across a restart. Leaving them would credit a completed pass, an interception
+or a save to a touch made ten seconds ago at the other end of the pitch, and
+would let a shot registered before the drop be "saved" by whoever happened to
+touch the ball after it. Moving the anchor is required, not optional: without
+it the counter would be measured against the box the ball was just teleported
+out of and would re-arm immediately.
+
+All four fields are inside `gameHash`, so this is part of the recorded,
+re-simulated truth the note requires the drop to be — it is simply more of it
+than the note lists. `kickoffReset` clears exactly the same set, for exactly
+the same reason.

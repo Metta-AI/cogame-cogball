@@ -119,7 +119,10 @@ drives it deeper. So the sim guarantees an escape. If the ball centre stays
 within **1.5 m** of where the counter last re-anchored — a 3 m × 3 m box —
 for **240 ticks (10 s)**, it teleports to the nearest
 neutral drop spot at rest, every robot within 3 m is pushed radially out to
-exactly 3 m, and a `drop` event fires. The drop is inside `gameHash`: it is
+exactly 3 m, and a `drop` event fires. A drop is a restart, so it also
+clears the possession chain — last toucher, previous toucher, the pending
+shot and the pending pass — exactly as a kickoff does, so nothing is
+credited across it. The drop is inside `gameHash`: it is
 part of the recorded, re-simulated truth, so no policy can defeat it. The
 control layer's boards-escape rule (COACHING.md) is the first line; this is the
 backstop.
