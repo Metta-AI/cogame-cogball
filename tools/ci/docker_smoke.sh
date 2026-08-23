@@ -233,6 +233,14 @@ if [ "${exit_code}" != "0" ]; then
   exit 1
 fi
 
+# Startup timings, on the SUCCESS path too. The board bake runs before the
+# listener opens and is charged against wallClockBudgetSeconds; without this
+# line the only record of how long it took was a container log that is dumped
+# on failure only, so the number could never be cited from a green run.
+docker logs "${prefix}-game" 2>&1 \
+  | grep -E 'board render caches baked|wall-clock budget reached' \
+  | sed 's/^/  /' || echo "  (no startup timing line in the game log)"
+
 # --------------------------------------------------------------------------
 # Assert the artifacts.
 # --------------------------------------------------------------------------

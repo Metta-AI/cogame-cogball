@@ -391,6 +391,11 @@ proc runServerLoop*(
   runtimeConfig = RuntimeConfig()
 ) =
   initAppState()
+  # The wall-clock budget starts HERE, before the board bake and before the
+  # listener opens, so every second the process spends is charged against the
+  # 690 s engine stop and the 720 s settle requirement -- not just the seconds
+  # after setup finished.
+  let episodeStart = getMonoTime()
   if saveReplayPath.len > 0 and loadReplayPath.len > 0:
     raise newException(ReplayError, "Cannot save and load a replay together")
   var replayLoaded = loadReplayPath.len > 0
@@ -443,7 +448,9 @@ proc runServerLoop*(
     let warmStart = getMonoTime()
     sim.warmBoardRenderCaches()
     echo "board render caches baked in ",
-      (getMonoTime() - warmStart).inMilliseconds, " ms"
+      (getMonoTime() - warmStart).inMilliseconds,
+      " ms (charged against wallClockBudgetSeconds=",
+      config.wallClockBudgetSeconds, ")"
 
   let client = if replayLoaded: nil else: newLlmClient(config)
   var engine = newTurnEngine(client,
@@ -468,7 +475,6 @@ proc runServerLoop*(
       else: initBroadcastTracker()
     quitAfterFrame = false
     failureDeclared = false
-    episodeStart = getMonoTime()
     lastGoalsSeen: array[Seat, int32]
     resultRecordWritten = false
 
