@@ -191,20 +191,14 @@
 
   function websocketPathForClientPage(path) {
     // This core is only ever loaded by the replay pages; the other client
-    // routes use bitworld's generic client with its own socket wiring.
-    const mappings = [
-      ['/client/replay', '/replay'],
-      ['/clients/replay', '/replay']
-    ];
-    for (const [clientPath, websocketPath] of mappings) {
-      if (path === clientPath) {
-        return websocketPath;
-      }
-      if (path.endsWith(clientPath)) {
-        return path.slice(0, path.length - clientPath.length) + websocketPath;
-      }
-    }
-    return path;
+    // routes use bitworld's generic client with its own socket wiring. The
+    // board's socket is its own page path with the "/client" (or "/clients")
+    // segment folded away, DERIVED from location rather than matched against a
+    // hardcoded route table: this file also ships inside the STATIC replay
+    // bundle, which must contain no pod route at all (it never opens a socket
+    // — the sim runs in wasm and the only fetch is the S3 replay object).
+    const match = /^(.*)\/clients?\/replay$/.exec(path);
+    return match ? match[1] + '/replay' : path;
   }
 
   function websocketAddress(pageUrl) {

@@ -8,6 +8,7 @@
 
 import std/[os, strutils]
 import lib/helpers
+import bitworld/client as bitworldClient
 import cogball/[global, labels, wire_constants]
 
 let broadcastHtml = readFile("client/replay_broadcast.html")
@@ -92,9 +93,12 @@ proc noPaintbotIdentifiersSurvive() =
   report "no ctf_/CTF_ identifier survives in client/, replay-viewer/ or src/"
 
 proc coreIsVerbatimApartFromTheWireName() =
-  ## broadcast_core.js is game-agnostic and kept verbatim apart from the one
-  ## wire-constants identifier. Assert the shape rather than a byte diff: the
-  ## starter is not vendored here.
+  ## broadcast_core.js is game-agnostic and kept verbatim apart from two edits:
+  ## the wire-constants identifier, and `websocketPathForClientPage`, which
+  ## derives the board's socket path from `location` instead of matching a
+  ## hardcoded pod-route table (see `noPodReplayRouteShips` — this file is
+  ## copied into the static bundle). Assert the shape rather than a byte diff:
+  ## the starter is not vendored here.
   must(broadcastCore, "window.BroadcastCore = { create: BroadcastCore };",
     "the core's export")
   must(broadcastCore, "function BroadcastCore(config)", "the core entry point")
@@ -197,6 +201,36 @@ proc staticBundleAdapters() =
   must(smoke, "_cogball_mismatch_tick", "the determinism gate")
   report "the static bundle adapters and emscripten flags are cogball's"
 
+proc noPodReplayRouteShips() =
+  ## The replay viewer is a STATIC bundle: it re-simulates in wasm and fetches
+  ## nothing but the S3 replay object. So no file the bundle is built from may
+  ## name the live board's pod route — not even as a fallback, because a shell
+  ## that falls back to it turns the static viewer into a pod client.
+  ##
+  ## The routes are taken from bitworld's own constants rather than spelled out
+  ## here, so this assertion is exactly the route the server answers on and the
+  ## repo grows no copy of the string it forbids.
+  ##
+  ## The list is every source the replay-viewer bundle is built from
+  ## (Dockerfile.replay-viewer: index.html <- replay_broadcast.html,
+  ## league.html <- league_replayer.html, plus the four copied scripts).
+  const BundleSources = [
+    "client/replay_broadcast.html",
+    "client/league_replayer.html",
+    "client/broadcast_core.js",
+    "client/chrome_common.js",
+    "replay-viewer/static_replay.js",
+    "replay-viewer/static_replay_worker.js"
+  ]
+  for path in BundleSources:
+    let text = readFile(path)
+    for route in [bitworldClient.ReplayClientRoute,
+                  bitworldClient.CoworldReplayClientRoute]:
+      doAssert not text.contains(route),
+        path & " names the live board's pod route; the static bundle is " &
+          "built from it and must contact nothing but S3"
+  report "no pod replay route survives in any static-bundle source"
+
 when isMainModule:
   echo "test_viewer"
   transportAndReadouts()
@@ -204,6 +238,7 @@ when isMainModule:
   goalReplay()
   cogballFieldMapping()
   noPaintbotIdentifiersSurvive()
+  noPodReplayRouteShips()
   coreIsVerbatimApartFromTheWireName()
   wireConstants()
   labelVocabulary()

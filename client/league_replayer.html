@@ -398,18 +398,25 @@
 
   // Proxy-aware route base. Observatory serves this shell (and every /client/*
   // asset + the embedded board) behind a per-session proxy prefix, e.g.
-  //   /v2/coworlds/replays/<key>/sessions/<id>/proxy/client/replay
+  //   /v2/coworlds/replays/<key>/sessions/<id>/proxy/client/league
   // so root-relative paths ("/client/...") would drop the whole prefix and 404.
   // Strip the trailing "/client/<page>" to recover the prefix ("" when served
-  // bare locally); every asset + the iframe src hang off it. Mirrors the board
-  // client, which strips "/client/replay" the same way to build its ws path.
+  // bare locally); every asset hangs off it. Mirrors the board client, which
+  // folds the same segment away to build its websocket path.
   var ROUTE_BASE = location.pathname.replace(/\/client\/[^/]*$/, "");
+  // The NATIVE board is this shell's SIBLING route: same directory, page name
+  // "replay". Derived from location, never spelled out, because this file is
+  // rendered into the STATIC bundle's league.html and the bundle must carry no
+  // pod route (acceptance checklist item 3) -- in the bundle the board is
+  // ./index.html and nothing but S3 is ever contacted.
+  var NATIVE_BOARD = location.pathname.replace(/\/[^/]*$/, "/replay");
 
   // ---- URL params: replay uri + Observatory-injected standings -------------
   // Two delivery modes share this shell:
   //  - NATIVE (a live replay server): served at /client/league, `uri` carries
-  //    the replay source and the embedded board is /client/replay on the same
-  //    (possibly session-proxied) prefix, talking over its own websocket.
+  //    the replay source and the embedded board is this shell's sibling board
+  //    route on the same (possibly session-proxied) prefix, talking over its
+  //    own websocket.
   //  - STATIC (the browser-only WASM bundle): served as league.html NEXT TO
   //    the bundle's index.html, `replay` carries the replay URL (the same
   //    param the bundle's board reads) and the embedded board is
@@ -443,7 +450,7 @@
     if (STATIC_BUNDLE) {
       src = './index.html?embed=1&replay=' + encodeURIComponent(staticReplayUri);
     } else {
-      src = ROUTE_BASE + '/client/replay?embed=1';
+      src = NATIVE_BOARD + '?embed=1';
       if (replayUri) src += '&uri=' + encodeURIComponent(replayUri);
     }
     $('game').src = src;
@@ -879,7 +886,7 @@
   function showLoadFailure(){
     if(lastState) return; // frames arrived after all — nothing to escalate
     var el=$('status'); el.classList.add('show','err');
-    var direct=(ROUTE_BASE||'')+'/client/replay'+location.search;
+    var direct=(STATIC_BUNDLE?'./index.html':NATIVE_BOARD)+location.search;
     el.innerHTML='';
     var head=document.createElement('div'); head.textContent='Replay didn’t load';
     var sub=document.createElement('span'); sub.className='st-sub';
