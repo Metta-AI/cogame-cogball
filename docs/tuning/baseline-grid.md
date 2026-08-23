@@ -109,6 +109,24 @@ The note's own §Scripted baselines is the *shape* of the baselines — who keep
 who strikes, who supports — and that shape is unchanged; only the three numbers
 inside it were settled by measurement rather than by estimate.
 
+## The `back` target, measured
+
+The note describes the `back`'s hold target as "the **midpoint of ball and own
+goal**, pulled 1.5 m to the far y-side". The code takes the midpoint on x and
+the **ball's own y** offset by `BackPull`. That is a real divergence, and it is
+deliberate: the note's shape was measured and is worse.
+
+| `back` target y | best `BackPull` | W–D–L | gd | goalless | score |
+|---|---|---|---|---|---|
+| **`ball.y ± BackPull`** (committed) | 1 500 000 | **30–3–15** | **+36** | **0** | **63/96** |
+| midpoint(ball, own goal).y ± BackPull | 3 000 000 | 24–12–12 | +17 | 0 | 60/96 |
+| midpoint, `BackPull` 1 500 000 | — | 23–9–16 | +4 | 1 | 55/96 |
+| midpoint, `BackPull` 0 | — | 19–15–14 | 0 | 1 | 53/96 |
+
+Pulling the y to the midpoint as well as the x drags the screening robot toward
+the goal line, where it duplicates the keeper instead of standing between the
+ball and the keeper. Keeping the ball's y is what makes it a screen.
+
 ## Reproducing
 
 ```bash

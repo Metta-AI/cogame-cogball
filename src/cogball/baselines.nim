@@ -132,6 +132,14 @@ proc formationDirective*(sim: SimServer, seat: Seat, turn: int): Directive =
     else:
       order.role = roleBack
       if sim.ballInOwnHalf(seat) and SupportAlwaysRuns == 0:
+        # The x is the midpoint of ball and own goal, as the design note says.
+        # The y is the BALL's, offset to the far side -- NOT the midpoint. That
+        # divergence is deliberate and measured: pulling the y to the midpoint
+        # too drags the screening robot onto the goal line, where it duplicates
+        # the keeper instead of standing between the ball and the keeper. The
+        # note's shape peaks at 60/96 against `swarm` (best BackPull) where
+        # this one scores 63/96 with no goalless match. Table and method in
+        # docs/tuning/baseline-grid.md.
         let
           own = ownGoalX(seat)
           midX = int32((int64(sim.ball.x) + int64(own)) div 2)
