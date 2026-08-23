@@ -29,10 +29,20 @@ The game container reads and writes the standard `COGAME_*` URIs:
 | `/global` | GET (ws) | the spectator board |
 | `/replay` | GET (ws) | the replay board (replay mode) |
 | `/client/global`, `/client/player` | GET | the bitworld generic clients |
-| `/client/replay` | GET | the designed broadcast client |
+| `/client/replay` | GET | the designed broadcast client, **live pod only** |
 | `/client/league` | GET | the League Replayer shell (embeds the above) |
 | `/client/font.ttf` | GET | the chrome font |
 | `/replay-data` | GET | the current replay bytes |
+
+**The hosted replay viewer is never one of these routes.** It is the STATIC
+wasm bundle: `coworld_manifest_template.json` declares
+`"replay_viewer": {"bundle": "static-replay-viewer"}`,
+`.github/workflows/coworld-release.yml` hard-fails certification if the
+certifier reports anything else, and the bundle re-simulates in the browser and
+fetches nothing but the S3 replay object. The `/client/*` pages above exist for
+a **locally running game pod** — `docker run` + a browser — and nothing the
+bundle ships names them: `tests/test_viewer.nim` asserts every source the
+bundle is built from is free of the pod board's route.
 
 A bad slot or a token that does not match the configured slot is refused with
 **403 before the websocket upgrade**. A viewer socket that carries player
