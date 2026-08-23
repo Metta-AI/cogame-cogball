@@ -130,6 +130,14 @@ proc requestFor*(client: LlmClient, system, user: string): LlmRequest =
   ## Builds one prepared call. Body shape copied from babel as is:
   ## `max_tokens` 900 (400 truncates), no `output_config.effort` on Haiku 4.5
   ## (it 400s on it), no `temperature` (an untested field on a Bedrock body).
+  ##
+  ## `output_config.effort` is sent on the ANTHROPIC path only, and there only
+  ## when the model string names neither `haiku` nor `4-5`. The BEDROCK body
+  ## never carries it at all -- deliberately stricter than the rule, for the
+  ## same reason `temperature` was dropped: an untested field on a Bedrock body
+  ## is a 400 in production, `bedrockModelIds()` leads with a haiku-4-5 profile
+  ## where the rule forbids the field anyway, and the field only trims cost, so
+  ## the conservative side of the trade costs nothing that matters.
   var body = %*{
     "max_tokens": client.maxOutputTokens,
     "system": system,
@@ -137,6 +145,7 @@ proc requestFor*(client: LlmClient, system, user: string): LlmRequest =
   }
   result.headers["content-type"] = "application/json"
   if client.transport == ltBedrock:
+    # No `output_config` here: see the docstring.
     body["anthropic_version"] = %BedrockAnthropicVersion
     if client.bedrockToken.len > 0:
       result.headers["authorization"] = "Bearer " & client.bedrockToken
