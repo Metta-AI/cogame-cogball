@@ -1657,6 +1657,7 @@ body[data-noviewpanel] #viewpanel { display: none !important; }
 
   // Cogball draws no first-person billboards: soccer is a perfect-information
   // sport, so there is no fog, no vision cone and no EYES inset to feed.
+  // Engine-authoritative wire constants (read via the shared chrome; the
   // fallback literals for raw file:// opens live in chrome_common.js).
   var WIRE = C.WIRE, SPEEDS = C.SPEEDS, FPS = C.FPS;
 
@@ -1700,6 +1701,25 @@ body[data-noviewpanel] #viewpanel { display: none !important; }
   var canvas = $('board');
   var statusEl = $('status');
 
+  // ---- where this page's own art lives -------------------------------------
+  // COG_BASE, not a root-absolute "/client/…": this page is served from THREE
+  // places and a leading slash is only correct at one of them.
+  //  - native server, bare:      the board's own client route → "" + /client/…
+  //  - native server, proxied:   the same route behind a Kubernetes service
+  //    proxy, /<prefix>/client/… — a leading slash would drop <prefix> and 404.
+  //  - the STATIC WASM BUNDLE:   /v2/coworlds/replays/static/<coworld>/<hash>/
+  //    index.html, where the art sits NEXT TO the page and there is no server
+  //    at all — a leading slash resolves to the API origin root and 404s.
+  // Stripping the trailing "/client/<page>" recovers the prefix, so the same
+  // expression serves all three. Mirrors ART_BASE in league_replayer.html and
+  // websocketPathForClientPage() in broadcast_core.js, which map the same
+  // /client + /clients route pair the same way. The bundle is detected by its
+  // WASM adapter rather than a URL param: window.CogballStaticReplay only
+  // exists when static_replay.js is on the page.
+  var COG_BASE = window.CogballStaticReplay
+    ? '.'
+    : location.pathname.replace(/\/clients?\/[^/]*$/, '') + '/client';
+
   // ---- pre-load curtain: the bot locker room -------------------------------
   // The stage opens on this scene (see #lockerroom CSS) while the socket /
   // wasm sim boots. The art frames are wired here (their base path is
@@ -1714,10 +1734,9 @@ body[data-noviewpanel] #viewpanel { display: none !important; }
   (function buildLockerRoom() {
     // Scene art (nanobanana generations, like the shell's dungeon walls):
     // bg.jpg is the empty-room plate; each bot is five freestanding alpha
-    // sprites (<bot>_<pose>.webp) cut from the generated pose frames. Same
-    // three-delivery-modes path story as the cog art, so the base derives
-    // from COG_BASE: native "<prefix>/client" + "/art/lockerroom", static
-    // bundle "./art/lockerroom".
+    // sprites (<bot>_<pose>.webp) cut from the generated pose frames. The
+    // base hangs off COG_BASE (above): native "<prefix>/client" +
+    // "/art/lockerroom", static bundle "./art/lockerroom".
     var artBase = COG_BASE + '/art/lockerroom';
     $('lk-bg').src = artBase + '/bg.jpg';
 
