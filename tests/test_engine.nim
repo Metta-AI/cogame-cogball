@@ -9,6 +9,7 @@ import std/[json, monotimes, os, strutils]
 import lib/helpers
 import cogball/llm
 import cogball/server
+import cogball/replays
 
 
 type
@@ -503,6 +504,76 @@ proc neverConnectingSeatIsReportedAndPlaysOn() =
     "only " & $moved & " of six robots moved; a trio went inert"
   report "a never-connecting seat is declared and the match reaches full_time"
 
+proc physicsGuardTripsAndLeavesAPartialReplay() =
+  ## The note's test 6: "a raised physics guard yields fault/sim_fault with
+  ## 0.5/0.5 scores AND a partial replay". Only the scores half was covered,
+  ## and it was covered by calling finishGame directly -- physicsGuardTripped
+  ## itself had no test caller at all, so nothing proved the guard could fire.
+  let config = testConfig(maxTicks = 4800)
+  var sim = playing(config)
+  let path = tempPath("sim-fault.bitreplay")
+  removeFile(path)
+  defer: removeFile(path)
+  var writer = openReplayWriter(path, config.configJson())
+  writer.lastMasks = newSeq[uint8](RobotCount)
+  for i, player in sim.players:
+    writer.writeJoin(tickTime(sim.tickCount), i, player.address, i, "t" & $i)
+
+  proc stepRecording(sim: var SimServer, writer: var ReplayWriter) =
+    let masks = sim.compileMasks(sim.activeDirective)
+    writer.writeInputFrameMasks(tickTime(sim.tickCount), masks)
+    var inputs = newSeq[InputState](RobotCount)
+    for i in 0 ..< RobotCount:
+      inputs[i] = decodeInputMask(masks[i])
+    sim.step(inputs, inputs)
+    writer.writeHash(uint32(sim.tickCount), sim.gameHash())
+
+  for seat in Seat:
+    sim.activeDirective[seat] = sim.formationDirective(seat, 0)
+    sim.hasDirective[seat] = true
+  for _ in 0 ..< 40:
+    sim.stepRecording(writer)
+  doAssert sim.phase == Playing, "the match ended before the guard was armed"
+  let ticksBefore = sim.tickCount
+
+  # Break the state the guard exists to catch: a body outside the arena. The
+  # substeps would clamp it straight back, so the corruption is injected during
+  # a kickoff freeze -- the one branch that skips the physics and still runs
+  # the guard, which is exactly the shape of "the fixed-point state has gone
+  # wrong and the integrator is no longer repairing it".
+  sim.freezeUntil = int32(sim.tickCount) + 4
+  sim.robots[2].x = PitchXMax + 5_000_000'i32
+  sim.robots[2].y = 1_000_000'i32
+  doAssert not inPitch(sim.robots[2].x, sim.robots[2].y)
+  sim.stepRecording(writer)
+
+  doAssert sim.phase == GameOver, "the physics guard did not stop the match"
+  doAssert sim.endReason == reasonFault,
+    "expected a fault, got " & reasonText(sim.endReason)
+  doAssert sim.endRule == erSimFault,
+    "expected sim_fault, got " & endRuleText(sim.endRule)
+  doAssert sim.scorePermille(Azure) == 500
+  doAssert sim.scorePermille(Crimson) == 500
+  doAssert not sim.seatWon(Azure) and not sim.seatWon(Crimson)
+  let results = parseJson(sim.playerResultsJson())
+  doAssert results["reason"].getStr() == "fault"
+  doAssert results["endRule"].getStr() == "sim_fault"
+  doAssert results["scores"][0].getFloat == 0.5
+  doAssert results["scores"][1].getFloat == 0.5
+
+  # ...and the partial replay is a real, readable replay of what did happen.
+  writer.closeReplayWriter()
+  doAssert fileExists(path), "no partial replay was written"
+  let data = parseReplayBytes(readFile(path))
+  doAssert data.gameName == GameName
+  doAssert data.joins.len == 2
+  doAssert data.hashes.len == ticksBefore + 1,
+    "the partial replay carries " & $data.hashes.len & " hashes for " &
+      $(ticksBefore + 1) & " recorded ticks"
+  doAssert data.hashes.len < config.maxTicks, "this replay is not partial"
+  doAssert data.inputs.len > 0, "the partial replay has no action log"
+  report "the physics guard fires, scores 0.5/0.5 and leaves a partial replay"
+
 proc seatsAlwaysScoreToOne() =
   for a in 0 .. 6:
     for b in 0 .. 6:
@@ -561,6 +632,7 @@ when isMainModule:
   mercyAndWallClock()
   hostErrorIsAReachableEnding()
   neverConnectingSeatIsReportedAndPlaysOn()
+  physicsGuardTripsAndLeavesAPartialReplay()
   seatsAlwaysScoreToOne()
   disconnectKeepsPlaying()
   echo "test_engine: all good"
