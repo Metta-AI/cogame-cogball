@@ -287,6 +287,50 @@ jobs:
         run: node tools/ci/viewer_shell_check.cjs "$PWD/dist/static-replay-viewer"
 
       # -----------------------------------------------------------------
+      # THE BUNDLE PLAYS, IN A REAL BROWSER. The check above runs the shell
+      # against stubs; this one runs the whole artifact the platform serves —
+      # wasm, Worker, OffscreenCanvas, chrome — against the fixture the native
+      # build just recorded, and then watches it PLAY for eight seconds.
+      # Loading is not playing: 0.1.4 drew its first frame, set
+      # data-replay-loaded and then threw inside that frame's feed render, so
+      # the board froze on tick 2 looking perfectly healthy.
+      # (--soak is this repo's addition to coworld-builder's template copy.)
+      #
+      # Playwright is pinned to 1.55.0 in BOTH halves — the npm module and the
+      # browser download. Bump them together or the browser fetch 404s.
+      # -----------------------------------------------------------------
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Playwright (pinned 1.55.0)
+        run: |
+          set -euo pipefail
+          npm install --no-save playwright@1.55.0
+          npx --yes playwright@1.55.0 install --with-deps chromium
+
+      - name: Play the bundle in a real browser
+        run: |
+          set -euo pipefail
+          node tools/ci/viewer_smoke.mjs \
+            --bundle "$PWD/dist/static-replay-viewer" \
+            --replay tests/fixtures/cogball-679961.bitreplay \
+            --timeout 90 \
+            --soak 8
+
+      - name: Upload the viewer smoke evidence
+        # Always: the screenshot and the JSON are most useful when this is red.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: viewer-smoke
+          path: |
+            viewer-smoke.png
+            viewer-smoke.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      # -----------------------------------------------------------------
       # THE NATIVE <-> WASM DETERMINISM GATE. The bundle re-simulates the
       # recorded action log through the SAME sim module compiled for wasm32
       # and compares every tick's gameHash against the recording. `int` is 32
