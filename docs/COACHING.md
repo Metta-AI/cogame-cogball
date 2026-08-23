@@ -130,7 +130,10 @@ baseline instead — the same directive shape, no LLM, microseconds per turn.
 Every wait is bounded. Both seats' calls go out as **one parallel batch** per
 turn with a 6.0 s deadline; anything that timed out, errored, returned non-JSON
 or returned no usable robot entry is retried **once** as a single batch with a
-2.5 s deadline, all inside a 9.0 s monotonic per-turn cap. Two consecutive
+2.5 s deadline, all inside a 9.0 s monotonic per-turn cap. (The transport
+takes whole seconds and a batch in flight cannot be interrupted, so each
+allowance is floored before it is handed over: 6 s + 2 s = 8 s realised worst
+case.) Two consecutive
 failures play the `formation` directive and write a `fallback` record naming the
 cause. If the wall clock gets close to the budget, a `budget_guard` record fires
 and the rest of the match runs on the scripted layer, so the episode ends

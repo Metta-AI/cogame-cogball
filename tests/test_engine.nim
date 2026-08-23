@@ -171,6 +171,38 @@ proc transportErrorsAreLabelledByCause() =
     doAssert seen == 4, "expected two attempts x two seats, saw " & $seen
   report "every curl deadline spelling is recorded as cause `timeout`"
 
+proc attemptDeadlinesFitTheTurnBudget() =
+  ## curly's transport timeout is whole seconds and a batch in flight cannot be
+  ## interrupted, so the SUM of the whole-second allowances the transport
+  ## actually receives is the realised worst case for a turn -- not the
+  ## millisecond configuration. It must fit inside turnBudgetMs.
+  var sim = playing(testConfig())
+  var granted: seq[int]
+  var engine = newTurnEngine(nil,
+    proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+        {.closure, gcsafe.} =
+      {.cast(gcsafe).}:
+        granted.add(timeoutSeconds)
+      for call in calls:
+        result.add BatchReply(seat: call.seat, error: "Timeout was reached"))
+  engine.llmSeats()
+  engine.turn(sim, 2, 0)
+  doAssert granted.len == 2, "expected attempt 1 plus one retry"
+  doAssert granted[0] == sim.config.attempt1Ms div 1000,
+    "attempt 1 was given " & $granted[0] & " s for a " &
+      $sim.config.attempt1Ms & " ms allowance"
+  doAssert granted[1] == sim.config.retryMs div 1000,
+    "the retry was given " & $granted[1] & " s for a " &
+      $sim.config.retryMs & " ms allowance"
+  var total = 0
+  for seconds in granted:
+    total += seconds
+  doAssert total * 1000 <= sim.config.turnBudgetMs,
+    "the whole-second attempt deadlines sum to " & $total &
+      " s, past the " & $sim.config.turnBudgetMs & " ms turn budget"
+  report "the attempt deadlines the transport receives sum to " & $total &
+    " s inside the " & $(sim.config.turnBudgetMs div 1000) & " s turn budget"
+
 proc budgetGuardFires() =
   ## The guard switches the LLM off for the rest of the match, so the episode
   ## ends complete/full_time rather than deadline.
@@ -356,6 +388,7 @@ when isMainModule:
   exactlyOneRetry()
   perTurnBudgetIsEnforced()
   transportErrorsAreLabelledByCause()
+  attemptDeadlinesFitTheTurnBudget()
   budgetGuardFires()
   noCredentialsFallsBackInstantly()
   rejectedCredentialsAreNotNoCredentials()

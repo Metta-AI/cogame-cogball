@@ -5,6 +5,9 @@
 ##   attempt 1 batch deadline   6.0 s   (config attempt1Ms)
 ##   retry batch deadline       2.5 s   (config retryMs)
 ##   outer monotonic turn cap   9.0 s   (config turnBudgetMs)
+## curly's transport timeout is whole seconds and a batch in flight cannot be
+## interrupted, so the per-attempt allowance is floored to whole seconds before
+## it is handed over: 6 s + 2 s = 8 s realised worst case, inside the 9 s cap.
 ## 40 turns x 9.0 s = 360 s against a 720 s budget, with a 690 s engine stop.
 ##
 ## Seats are NEVER queried sequentially. The transport is injected as a
@@ -208,9 +211,11 @@ proc userMessage*(
 
 proc curlyBatch*(client: LlmClient): BatchFn =
   ## The production transport: ONE `curly.makeRequests` call per attempt, so
-  ## both seats are in flight together. curly's timeout is whole seconds, so a
-  ## sub-second budget rounds UP here and the outer monotonic turn deadline
-  ## keeps the real cap.
+  ## both seats are in flight together. curly's timeout is whole seconds and
+  ## nothing interrupts a batch already in flight, so the caller rounds the
+  ## allowance DOWN (floor, with a one-second minimum) before handing it over:
+  ## an attempt can then never be given more wall clock than the turn deadline
+  ## has left.
   result = proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
       {.closure, gcsafe.} =
     result = @[]
@@ -352,7 +357,14 @@ proc turn*(
     let started = getMonoTime()
     var replies: seq[BatchReply]
     try:
-      replies = engine.batch(calls, (allowedMs + 999) div 1000)
+      # FLOOR, not ceiling: curly's timeout is whole seconds and a batch in
+      # flight is not interruptible, so rounding 2500 ms up to 3 s would let
+      # the retry run past the turn budget the outer deadline is supposed to
+      # enforce. Floored, the realised worst case is attempt 1 6 s + retry 2 s
+      # = 8 s inside the 9 s turnBudgetMs cap. The one-second minimum is
+      # curly's own floor; it only bites when under a second is left, which is
+      # already past the point where a batch can usefully be issued.
+      replies = engine.batch(calls, max(1, allowedMs div 1000))
     except CatchableError as failure:
       replies = @[]
       for call in calls:
