@@ -350,20 +350,34 @@ window.ChromeCommon = function (ctx) {
   var seenMarkers = {};      // tick|kind -> marker (dedup)
   var pendingMarkers = [];
   var markerEls = [];        // placed marker elements (spoiler gate re-checks these)
-  function markBeat(tick, kind, team) {
+  function markBeat(tick, kind, team, label) {
     var mk = tick + '|' + kind;
     if (seenMarkers[mk]) return;
-    seenMarkers[mk] = { tick: tick, kind: kind, team: team || '' };
+    seenMarkers[mk] = { tick: tick, kind: kind, team: team || '', label: label || '' };
     pendingMarkers.push(seenMarkers[mk]);
   }
   function renderBeatMarkers(st, mx) {
     if (!pendingMarkers.length) return;
     var span = Math.max(1, mx - st);
     pendingMarkers.forEach(function (m) {
-      var el = document.createElement('div');
+      // A button, not a div: every beat is a seek target. The page hands us
+      // its seek in ctx; without one the click falls through to the scrub
+      // track's own click-to-seek, which lands at the same x anyway.
+      var el = document.createElement('button');
+      el.type = 'button';
       el.className = 'beat-marker ' + m.kind + (m.team ? ' ' + m.team : '');
       el.style.left = (Math.min(1, Math.max(0, (m.tick - st) / span)) * 100) + '%';
       el.__tick = m.tick;
+      if (m.label) {
+        el.title = m.label;
+        el.setAttribute('aria-label', m.label + ' (seek)');
+      }
+      if (ctx.seek) {
+        el.addEventListener('click', function (event) {
+          event.stopPropagation();
+          ctx.seek(m.tick);
+        });
+      }
       markerEls.push(el);
       scrubEl.appendChild(el);
     });

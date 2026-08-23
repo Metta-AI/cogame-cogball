@@ -951,6 +951,21 @@ html, body {
 }
 .beat-marker.return { background: var(--tc, var(--paper-dim)); opacity: 0.45; }
 .beat-marker.capture { background: var(--tc, var(--amber)); width: calc(3 * var(--u)); height: calc(12 * var(--u)); }
+/* cogball beats: a goal is the chunky match-point tick in the scoring team's
+   colour, a save a short one in the keeper's. Markers are buttons (they seek
+   on click), so reset the button chrome and give them a fingertip hit box
+   and a round head so they read at 360 px. */
+.beat-marker { margin: 0; padding: 0; border: 0; cursor: pointer; pointer-events: auto; font: inherit; }
+.beat-marker::before { content: ''; position: absolute; inset: calc(-3 * var(--u)) calc(-5 * var(--u)); }
+.beat-marker.goal::after, .beat-marker.save::after {
+  content: ''; position: absolute; left: 50%; top: 0;
+  width: calc(6 * var(--u)); height: calc(6 * var(--u));
+  transform: translate(-50%, calc(-3 * var(--u)));
+  border-radius: 50%; background: inherit;
+}
+.beat-marker:hover, .beat-marker:focus-visible { filter: brightness(1.4); outline: none; z-index: 5; }
+.beat-marker.goal { background: var(--tc, var(--amber)); width: calc(3 * var(--u)); height: calc(12 * var(--u)); }
+.beat-marker.save { background: var(--tc, var(--paper-dim)); height: calc(6 * var(--u)); }
 /* winner cap: a flat block just past the track's right end, colored by the
    verdict (split for a draw), so the scrubber itself says how this ends. */
 .scrub-win {
@@ -1636,6 +1651,8 @@ body[data-noviewpanel] #viewpanel { display: none !important; }
   }
   var C = window.ChromeCommon({
     send: function (cmd) { send(cmd); },
+    // Beat markers seek on click (chrome_common.markBeat builds buttons).
+    seek: function (tick) { send('s:' + tick); },
     sendPov: function (slot) { send('v:' + slot); },
     getState: function () { return lastState; }
   });
@@ -2181,7 +2198,9 @@ body[data-noviewpanel] #viewpanel { display: none !important; }
   }
 
   function onGoal(e, s) {
-    markBeat(e.t, 'goal', e.team);
+    markBeat(e.t, 'goal', e.team,
+      'GOAL ' + (e.team || '').toUpperCase() + ' \u2014 ' + (e.by || '?') +
+      (e.score ? ' (' + e.score[0] + '\u2013' + e.score[1] + ')' : ''));
     var speed = e.speed ? (' \u00b7 ' + e.speed.toFixed(1) + ' m/s') : '';
     var assist = e.assist ? (' (assist ' + esc(e.assist) + ')') : '';
     pushFeed('<span class="k-verb">GOAL</span> ' +
@@ -2198,7 +2217,8 @@ body[data-noviewpanel] #viewpanel { display: none !important; }
       ' <span class="k-verb">shoots</span> \u2014 on target');
   }
   function onSave(e, s) {
-    markBeat(e.t, 'save', e.team);
+    markBeat(e.t, 'save', e.team,
+      'SAVE ' + (e.team || '').toUpperCase() + ' \u2014 ' + (e.by || '?'));
     pushFeed(teamChip(e.team, e.team.toUpperCase()) +
       ' <span class="k-verb">SAVE</span>');
     beatPulse();
