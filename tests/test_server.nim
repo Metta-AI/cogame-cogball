@@ -121,6 +121,27 @@ proc twoNameSpaces() =
   doAssert not sim.config.showPlayerLabels,
     "showPlayerLabels must be false on the player stream"
 
+  # ...and the guarantee does not DEPEND on that flag. Nothing reads
+  # showPlayerLabels -- the board's whole vocabulary is robotId()/seatAlias()
+  # (labels.nim), so no code path can put a real name on the board. Force the
+  # flag true and assert the stream is still anonymous, which is what makes
+  # the property structural rather than a switch someone can flip.
+  sim.config.showPlayerLabels = true
+  var forcedState = initPlayerViewerState()
+  var forcedNext: PlayerViewerState
+  let forced = sim.buildSpriteProtocolPlayerUpdates(0, forcedState, forcedNext)
+  var forcedLabels = 0
+  for message in forced.parseSpritePacket():
+    if message.kind != spkSprite:
+      continue
+    inc forcedLabels
+    for player in sim.players:
+      doAssert not message.sprite.label.contains(player.address),
+        "showPlayerLabels=true leaked a real policy name onto the board: " &
+          message.sprite.label
+  doAssert forcedLabels > 0, "the forced stream defined no sprites"
+  sim.config.showPlayerLabels = false
+
   # ...and the SPECTATOR side carries them.
   sim.finishGame(reasonComplete, erFullTime)
   let results = parseJson(sim.playerResultsJson())

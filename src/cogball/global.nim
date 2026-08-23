@@ -731,8 +731,14 @@ proc buildSpriteProtocolPlayerUpdates*(
 ): seq[uint8] =
   ## One seat's stream. It sees the whole pitch and every body — plus a self
   ## marker on its own trio and an invisible `own seat <alias>` marker naming
-  ## it. It never sees a real player name: board labels carry only `AZ-1`..
-  ## `CR-3`, and `showPlayerLabels` is forced false on this path.
+  ## it. It never sees a real player name, and that is STRUCTURAL rather than
+  ## a switch: every board label is built from `robotId()` / `seatAlias()` in
+  ## `labels.nim`, so there is no code path that could put `player.address`
+  ## on the board and nothing for `config.showPlayerLabels` to gate. The flag
+  ## stays because the manifest's config_schema declares it and it defaults
+  ## false; tests/test_server.nim asserts the guarantee holds with it forced
+  ## TRUE, which is the only way to show the mechanism is the vocabulary and
+  ## not the flag.
   nextState = state
   if nextState.isNil:
     nextState = initPlayerViewerState()
