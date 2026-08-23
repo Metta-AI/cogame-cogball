@@ -138,7 +138,8 @@ proc loadReplay*(path: string): ReplayData =
 
 proc serializeReplaySim*(sim: var SimServer): string =
   ## Serializes one sim state for a keyframe. The board bake is process-wide
-  ## (global.nim owns it), so unlike ctf there is nothing to strip.
+  ## (global.nim owns it), so unlike ctf there is no baked-pixel field to strip
+  ## out of the keyframe before writing it -- and no field is carried for one.
   sim.toFlatty()
 
 proc deserializeReplaySim*(bytes: string, donor: var SimServer): SimServer =

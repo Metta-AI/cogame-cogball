@@ -387,7 +387,6 @@ type
     goalFx*: seq[GoalFx]       ## cosmetic goal celebrations; never hashed.
     paint*: seq[PaintDot]      ## position-history turf paint; never hashed.
     feed*: seq[FeedLine]       ## broadcast match-feed rows; never hashed.
-    pitchRgba*: seq[uint8]     ## baked turf, stripped from keyframes.
     gameEventLoggingEnabled*: bool
     collectEvents*: bool
     events*: seq[SimEvent]
