@@ -782,7 +782,8 @@ proc runServerLoop*(
           # the only channel that survives a hosted replay.
           packet.addSprite(BroadcastChromeSpriteId, 1, 1, [0'u8, 0, 0, 0],
             sim.buildStateJson(frameEvents, true,
-              playbackSpeed(liveSpeedIndex), config.maxTicks, false, false, -1,
+              float(playbackSpeed(liveSpeedIndex)), config.maxTicks, false,
+              false, -1,
               -1, @[], 0, 0, false, false, false, @[], nil))
         if packet.len == 0:
           continue

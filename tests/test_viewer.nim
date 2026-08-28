@@ -119,7 +119,7 @@ proc wireConstants() =
   ## The engine renders the block; the clients read it. A retuned
   ## PlaybackSpeeds must never silently desync a client.
   doAssert WireConstantsJs.startsWith("window.COGBALL_WIRE={")
-  must(WireConstantsJs, "speeds:[1,2,3,4,8,16]", "the speed table")
+  must(WireConstantsJs, "speeds:[0.5,1,2,3,4,8,16]", "the speed table")
   must(WireConstantsJs, "fps:24", "the frame rate")
   must(WireConstantsJs, "chromeSpriteId:" & $BroadcastChromeSpriteId,
     "the chrome sprite id")

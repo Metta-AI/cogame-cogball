@@ -2136,7 +2136,7 @@ body[data-noviewpanel] #viewpanel { display: none !important; }
   // (applyReplayCommand server-side), one replay per goal, and any manual
   // scrub cancels it.
   var GOAL_REPLAY_BACK = 72;         // ticks (3 s at 24 Hz)
-  var SPEED_CMD = { 1: '1', 2: '2', 3: '3', 4: '4', 8: '8', 16: '6' };
+  var SPEED_CMD = { 0.5: '5', 1: '1', 2: '2', 3: '3', 4: '4', 8: '8', 16: '6' };
   var goalReplaySeen = {};
   var goalReplayTimers = [];
   var goalReplayActive = false;

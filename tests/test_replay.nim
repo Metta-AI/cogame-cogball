@@ -347,10 +347,39 @@ proc run() =
 
   removeFile(path)
 
+proc halfSpeedIsAReplayOnlyCrawl() =
+  ## The fleet-wide 1/2x replay speed: command '5' selects
+  ## ReplayHalfSpeedIndex, the chrome shows 0.5, and the step budget spends
+  ## one tick every OTHER frame (halfPhase parity) outside lulls.
+  var replay = ReplayPlayer()
+  replay.speedIndex = 0
+  applySpeedCommand(replay.speedIndex, '5')
+  doAssert replay.speedIndex == ReplayHalfSpeedIndex, "'5' must select 1/2x"
+  doAssert replay.replayDisplaySpeed() == 0.5,
+    "the chrome speed at 1/2x is 0.5, got " & $replay.replayDisplaySpeed()
+  doAssert replay.replaySpeed() == 1,
+    "the integer speed clamps to 1x at 1/2x (live loop safety)"
+  replay.skipLulls = false
+  replay.halfPhase = false
+  doAssert replay.replayStepBudget(0) == 0,
+    "even frame at 1/2x spends no tick"
+  replay.halfPhase = true
+  doAssert replay.replayStepBudget(0) == 1,
+    "odd frame at 1/2x spends one tick"
+  applySpeedCommand(replay.speedIndex, '+')
+  doAssert replay.speedIndex == 0, "'+' from 1/2x lands on 1x"
+  applySpeedCommand(replay.speedIndex, '-')
+  doAssert replay.speedIndex == ReplayHalfSpeedIndex,
+    "'-' from 1x lands on 1/2x"
+  applySpeedCommand(replay.speedIndex, '-')
+  doAssert replay.speedIndex == ReplayHalfSpeedIndex, "1/2x is the floor"
+  report "1/2x replay speed: command '5', 0.5 chrome speed, tick parity"
+
 when isMainModule:
   echo "test_replay"
   writeInputFrameMasksShim()
   dropBeatsMatchRealDrops()
   kickoffBeatsFireAtEveryRestart()
+  halfSpeedIsAReplayOnlyCrawl()
   run()
   echo "test_replay: all good"

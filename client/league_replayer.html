@@ -590,11 +590,14 @@
     failTimer=setTimeout(showLoadFailure, 45000);
   }
   // Direct Esc while the shell chrome (transport, KDA rows, scrubber) holds
-  // focus; 'o' mirrors the [spoilers] transport button (a shell-local UI
-  // toggle, so it never goes down the command channel to the board).
+  // focus; Space mirrors the play/pause button through the command channel
+  // (the board's own keydown can't fire while the shell holds focus); 'o'
+  // mirrors the [spoilers] transport button (a shell-local UI toggle, so it
+  // never goes down the command channel to the board).
   window.addEventListener('keydown', function(ev){
     if(ev.metaKey||ev.ctrlKey||ev.altKey) return;
     if(ev.key==='Escape'){ postEscToHost(); }
+    else if(ev.key===' '){ ev.preventDefault(); sendCmd(' '); }
     else if(ev.key==='o'){ setSpoilers(!getSpoilers()); }
   });
 
