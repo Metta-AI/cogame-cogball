@@ -1,9 +1,0 @@
-.git
-.DS_Store
-nim.cfg
-nimcache
-out
-tmp
-build
-replay-viewer/dist
-*.tmp

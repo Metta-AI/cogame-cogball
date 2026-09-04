@@ -1,7 +1,0 @@
-services:
-  cogball:
-    image: coworld-cogball:latest
-    platform: linux/amd64
-    build:
-      context: .
-      network: host
