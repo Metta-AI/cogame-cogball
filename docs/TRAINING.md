@@ -33,3 +33,26 @@ default, and 320 train and 80 validation examples for sprint. All fit a
 loss from 1.69949 to 1.69358 for default and from 1.69949 to 1.69357 for
 sprint. These checks validate the data and optimizer paths; they do not show
 that a trained policy plays better than `formation`.
+
+# Numeric training
+
+The numeric bridge runs the shipped match simulator and controller, including
+both seats' simultaneous coaching turns. Each decision carries the exact
+hosted coach view as `semantic_view` and 87 fixed numeric features. Its 345
+choices are the `formation` and `swarm` scripted baselines plus every
+combination of seven intents for the three robots, using formation targets.
+The chosen reply passes through the production directive parser. The catalog
+does not expose arbitrary target coordinates or every possible directive.
+
+```sh
+nim c -d:release --path:src -o:/tmp/cogball-train-bridge tools/train_bridge.nim
+python3 tools/test_train_bridge.py /tmp/cogball-train-bridge
+```
+
+With a Metta checkout containing the generic Coworld bridge, pass
+`[/tmp/cogball-train-bridge, /absolute/path/coworld_manifest_template.json,
+default]` to `recipes.external.coworld_metta_rl.train` or
+`recipes.external.coworld.train` for native PufferLib. Use `sprint` for the
+second certified variant, set `players=2`, and choose a finite timestep limit.
+Full teacher and random matches completed for both variants; observations
+stayed frozen until both coaches acted.
