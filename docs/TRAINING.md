@@ -56,3 +56,12 @@ default]` to `recipes.external.coworld_metta_rl.train` or
 second certified variant, set `players=2`, and choose a finite timestep limit.
 Full teacher and random matches completed for both variants; observations
 stayed frozen until both coaches acted.
+
+Metta RL completed 512 training steps and evaluation for each variant. The
+mean evaluation returns were -0.333 for default and 0.500 for sprint. Native
+PufferLib completed 4,096 CUDA training steps, checkpoint reload, and eight
+held-out games per variant. Default scores were 625 and 208.25 on seeds 101
+and 102 (checkpoint SHA-256 `9c94a0b116e813d03d6790fd809a083b5ac3c3f486f1066ef8a38232380d6116`).
+Sprint scores were 583.5 and 625.25 (checkpoint SHA-256
+`6d5d275a62cc1ce167a5bb896df7abdc2ea90becd5d2c57aedc43b0912d5199d`).
+These pilots verify the training and evaluation paths, not league strength.
