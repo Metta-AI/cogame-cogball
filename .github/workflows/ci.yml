@@ -145,6 +145,11 @@ jobs:
           done
           exit "${fail}"
 
+      - name: Export post-training baseline matches
+        run: |
+          nim c -d:release --path:src -o:/tmp/cogball-export-posttrain tools/export_posttrain.nim
+          python3 tools/test_export_posttrain.py /tmp/cogball-export-posttrain
+
       # -----------------------------------------------------------------
       # Record the wasm smoke's fixture with the NATIVE build of THIS commit.
       # The smoke exists to catch a divergence between two builds of the SAME
