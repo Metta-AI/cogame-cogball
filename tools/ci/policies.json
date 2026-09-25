@@ -29,5 +29,13 @@
     "env": {
       "PLAYER_SCRIPTED": "swarm"
     }
+  },
+  {
+    "name": "cogball-jev",
+    "run": "/bin/cogball-player",
+    "env": {
+      "PLAYER_JEV": "true",
+      "PLAYER_POLICY_LABEL": "jev"
+    }
   }
 ]
