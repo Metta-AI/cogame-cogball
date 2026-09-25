@@ -113,20 +113,20 @@ Things that show up in the replays:
 
 ## Fielding a policy
 
-Reuse the shipped image and set one environment variable:
+Reuse the shipped image and let the hosted model sidecar serve the prompt:
 
 ```bash
 coworld upload-policy coworld-cogball:latest \
   --name my-cogball \
   --run /bin/cogball-player \
   --secret-env PLAYER_PROMPT="<your strategy>" \
-  --secret-env ANTHROPIC_API_KEY="<your player credential>"
+  --use-bedrock --bedrock-model anthropic/claude-haiku-4.5
 ```
 
 `PLAYER_SCRIPTED=formation` or `PLAYER_SCRIPTED=swarm` fields a built-in
 baseline instead — the same directive shape, no LLM, microseconds per turn.
-`PLAYER_JEV=true` selects Jev; give that player a TypeSafe key or the supported
-inference sidecar. Jev chooses three legal robot intents from the private view
+`PLAYER_JEV=true` selects Jev. Upload it with
+`--use-bedrock --bedrock-model typesafe/jev-1.13`. Jev chooses three legal robot intents from the private view
 and returns the same directive JSON as a prompt policy.
 
 ## Degrading

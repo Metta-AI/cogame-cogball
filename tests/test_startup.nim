@@ -2,8 +2,10 @@
 ## on a bad config, the seed is randomised when unpinned and honoured when
 ## pinned, and both entrypoints exist in the image.
 
-import std/[os, strutils]
+import std/[json, os, strutils]
+import curly
 import lib/helpers
+import cogball/llm
 import cogball/sim_config
 import cogball_player
 
@@ -166,6 +168,23 @@ proc thePlayerSurvivesTheStartRace() =
   report "the player retries a refused connect for " &
     $(ConnectTimeoutMs div 1000) & "s and then exits cleanly"
 
+proc hostedPromptUsesTheSidecar() =
+  let oldEndpoint = getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME")
+  let oldModel = getEnv("BEDROCK_MODEL")
+  putEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "http://127.0.0.1:9100/")
+  putEnv("BEDROCK_MODEL", "anthropic/claude-haiku-4.5")
+  let request = newLlmClient(defaultGameConfig()).requestFor("rules", "private view")
+  doAssert request.url == "http://127.0.0.1:9100/v1/messages"
+  doAssert request.headers["anthropic-version"] == "2023-06-01"
+  doAssert request.headers["authorization"].len == 0
+  doAssert request.headers["x-api-key"].len == 0
+  let body = parseJson(request.body)
+  doAssert body["model"].getStr() == "anthropic/claude-haiku-4.5"
+  doAssert not body.hasKey("anthropic_version")
+  putEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", oldEndpoint)
+  putEnv("BEDROCK_MODEL", oldModel)
+  report "hosted prompt sends Anthropic Messages to the model sidecar"
+
 when isMainModule:
   echo "test_startup"
   badConfigIsRejectedCleanly()
@@ -175,4 +194,5 @@ when isMainModule:
   missingConfigUriIsSurvivable()
   thePlayerReceiveIsBounded()
   thePlayerSurvivesTheStartRace()
+  hostedPromptUsesTheSidecar()
   echo "test_startup: all good"

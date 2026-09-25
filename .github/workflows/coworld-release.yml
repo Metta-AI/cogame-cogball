@@ -13,7 +13,7 @@
 # not "upload-coworld prunes the image" -- no prune/rmi exists anywhere in the
 # CLI; only the ordering is established, so treat it as empirical.)
 #
-# Repo secrets required: SOFTMAX_TOKEN, ANTHROPIC_API_KEY (set by coworld-builder's propagate-secrets.yml).
+# Repo secret required: SOFTMAX_TOKEN (set by coworld-builder's propagate-secrets.yml).
 #
 # The agent reads the outcome back with:
 #   gh run download <run_id> -R Metta-AI/cogame-cogball -n release-result \
@@ -199,13 +199,11 @@ jobs:
       - name: Upload the policies
         # BEFORE upload-coworld: observed, upload-policy reports the local
         # image missing if it runs after upload-coworld.
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           set -euo pipefail
           echo "Upload the policies" > "$RR/current_step"
           python3 - "$RR" "${IMAGE}:latest" "$COWORLD_PKG" <<'PY'
-          import json, os, re, shlex, subprocess, sys
+          import json, re, shlex, subprocess, sys
 
           rr, default_image, pkg = sys.argv[1], sys.argv[2], sys.argv[3]
           rows = json.load(open(f"{rr}/policies_input.json"))
@@ -250,9 +248,9 @@ jobs:
                   for key, value in (row.get("env") or {}).items():
                       cmd += ["--secret-env", f"{key}={value}"]
                   if (row.get("env") or {}).get("PLAYER_PROMPT"):
-                      if not os.environ.get("ANTHROPIC_API_KEY"):
-                          raise SystemExit("ANTHROPIC_API_KEY is required for prompt players")
-                      cmd += ["--secret-env", f"ANTHROPIC_API_KEY={os.environ['ANTHROPIC_API_KEY']}"]
+                      cmd += ["--use-bedrock", "--bedrock-model", "anthropic/claude-haiku-4.5"]
+                  if (row.get("env") or {}).get("PLAYER_JEV"):
+                      cmd += ["--use-bedrock", "--bedrock-model", "typesafe/jev-1.13"]
                   # The command is NOT echoed: --secret-env values are policy secrets.
                   print(f"::group::upload-policy {name} ({image}) as {player or 'the token owner'}",
                         flush=True)

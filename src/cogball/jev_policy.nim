@@ -60,7 +60,7 @@ proc chooseJevAction*(view: JsonNode, seat, timeoutSeconds: int): JsonNode =
     elif capture.len > 0: capture
     else: getEnv("TYPESAFE_BASE_URL", "https://api.typesafe.ai")
   let model =
-    if sidecar.len > 0: "typesafe/jev-1.13"
+    if sidecar.len > 0: getEnv("BEDROCK_MODEL")
     elif capture.len > 0: getEnv("METTA_CAPTURE_MODEL", "jev-latest")
     else: getEnv("TYPESAFE_DEFAULT_MODEL", "jev-latest")
   let key =

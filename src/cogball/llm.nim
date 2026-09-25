@@ -1,4 +1,4 @@
-## The LLM client: credential ladder and transport, ported from
+## The LLM client: hosted sidecar and local Anthropic transport, ported from
 ## `cogame-babel/src/babel/llm.nim` into the ctf-lineage player.
 ##
 ## coworld-ctf has no LLM client in its episode server (its campaign strategist
@@ -6,10 +6,8 @@
 ## Metta-AI/metta, not in the repo), so this module is the one piece of the
 ## parley/babel lineage cogball carries across.
 ##
-## Credentials, in order of preference:
-##   Bedrock sidecar / bearer token   - hosted pods
-##   ANTHROPIC_API_KEY                - the key itself
-##   ANTHROPIC_API_KEY_URI            - a URI holding the key
+## Hosted pods use the model sidecar. Local runs can use ANTHROPIC_API_KEY or
+## ANTHROPIC_API_KEY_URI.
 ## With no credentials the client is `disabled` and every turn falls back
 ## instantly with NO network wait, so offline certification completes in
 ## seconds. That fallback is load-bearing.
@@ -26,11 +24,10 @@ import
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
   AnthropicVersion = "2023-06-01"
-  BedrockAnthropicVersion = "bedrock-2023-05-31"
 
 type
   LlmTransport* = enum
-    ltNone, ltBedrock, ltAnthropic
+    ltNone, ltSidecar, ltAnthropic
 
   LlmRequest* = object
     ## One prepared HTTP call made by the prompt player.
@@ -42,10 +39,7 @@ type
     curl*: Curly
     transport*: LlmTransport
     apiKey: string
-    bedrockEndpoint: string
-    bedrockModels: seq[string]
-    bedrockModel: int
-    bedrockToken: string
+    sidecarEndpoint: string
     model*: string
     maxOutputTokens*: int
     disabled*: bool            ## true once credentials are known-unavailable.
@@ -63,54 +57,18 @@ proc resolveApiKey(): string =
     echo "cogball llm: failed to fetch ANTHROPIC_API_KEY_URI: ", error.msg
     result = ""
 
-proc bedrockModelIds(): seq[string] =
-  ## Bedrock inference-profile candidates, tried in order. BEDROCK_MODEL pins
-  ## one; without it, fall through this list — model access is a per-account
-  ## Marketplace subscription, so an id that works in one account 403s in
-  ## another. Haiku leads: hosted Bedrock capacity is shared account-wide and
-  ## the sonnet profiles run out of daily tokens first.
-  let pinned = getEnv("BEDROCK_MODEL").strip()
-  if pinned.len > 0:
-    return @[pinned]
-  @[
-    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "us.anthropic.claude-sonnet-4-6",
-    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-  ]
-
-proc tryNextBedrockModel*(client: LlmClient, why: string): bool =
-  if client.transport != ltBedrock or
-      client.bedrockModel + 1 >= client.bedrockModels.len:
-    return false
-  client.bedrockModel.inc
-  echo "cogball llm: ", client.bedrockModels[client.bedrockModel - 1],
-    " unusable (", why, "); falling back to ",
-    client.bedrockModels[client.bedrockModel]
-  true
-
-proc bedrockUrl(client: LlmClient): string =
-  client.bedrockEndpoint & "/model/" &
-    client.bedrockModels[client.bedrockModel] & "/invoke"
-
 proc newLlmClient*(config: GameConfig): LlmClient =
   result = LlmClient(
     model: config.model,
     maxOutputTokens: config.maxOutputTokens
   )
-  let
-    bedrockEndpoint = getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").strip()
-    bedrockToken = getEnv("AWS_BEARER_TOKEN_BEDROCK").strip()
-  if bedrockEndpoint.len > 0 or bedrockToken.len > 0:
-    let region = getEnv("AWS_REGION", getEnv("AWS_DEFAULT_REGION", "us-west-2"))
-    let endpoint =
-      if bedrockEndpoint.len > 0: bedrockEndpoint
-      else: "https://bedrock-runtime." & region & ".amazonaws.com"
-    result.transport = ltBedrock
-    result.bedrockEndpoint = endpoint.strip(chars = {'/'}, leading = false)
-    result.bedrockModels = bedrockModelIds()
-    result.bedrockToken = bedrockToken
+  let sidecarEndpoint = getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").strip()
+  if sidecarEndpoint.len > 0:
+    result.transport = ltSidecar
+    result.sidecarEndpoint = sidecarEndpoint.strip(chars = {'/'}, leading = false)
+    result.model = getEnv("BEDROCK_MODEL")
     result.curl = newCurly()
-    echo "cogball llm: bedrock transport, url ", result.bedrockUrl
+    echo "cogball llm: sidecar transport, model ", result.model
     return
   result.apiKey = resolveApiKey()
   if result.apiKey.len > 0:
@@ -123,35 +81,21 @@ proc newLlmClient*(config: GameConfig): LlmClient =
     echo "cogball llm: no LLM credentials; using scripted fallback"
 
 proc requestFor*(client: LlmClient, system, user: string): LlmRequest =
-  ## Builds one prepared call. Body shape copied from babel as is:
-  ## `max_tokens` 900 (400 truncates), no `output_config.effort` on Haiku 4.5
-  ## (it 400s on it), no `temperature` (an untested field on a Bedrock body).
-  ##
-  ## `output_config.effort` is sent on the ANTHROPIC path only, and there only
-  ## when the model string names neither `haiku` nor `4-5`. The BEDROCK body
-  ## never carries it at all -- deliberately stricter than the rule, for the
-  ## same reason `temperature` was dropped: an untested field on a Bedrock body
-  ## is a 400 in production, `bedrockModelIds()` leads with a haiku-4-5 profile
-  ## where the rule forbids the field anyway, and the field only trims cost, so
-  ## the conservative side of the trade costs nothing that matters.
+  ## Both routes speak Anthropic Messages. Haiku 4.5 rejects effort settings.
   var body = %*{
+    "model": client.model,
     "max_tokens": client.maxOutputTokens,
     "system": system,
     "messages": [{"role": "user", "content": user}]
   }
   result.headers["content-type"] = "application/json"
-  if client.transport == ltBedrock:
-    # No `output_config` here: see the docstring.
-    body["anthropic_version"] = %BedrockAnthropicVersion
-    if client.bedrockToken.len > 0:
-      result.headers["authorization"] = "Bearer " & client.bedrockToken
-    result.url = client.bedrockUrl()
+  result.headers["anthropic-version"] = AnthropicVersion
+  if client.transport == ltSidecar:
+    result.url = client.sidecarEndpoint & "/v1/messages"
   else:
-    body["model"] = %client.model
     if "haiku" notin client.model and "4-5" notin client.model:
       body["output_config"] = %*{"effort": "low"}
     result.headers["x-api-key"] = client.apiKey
-    result.headers["anthropic-version"] = AnthropicVersion
     result.url = AnthropicUrl
   result.body = $body
 
@@ -161,15 +105,11 @@ proc completionText*(client: LlmClient, code: int, body: string): string =
   ## episode so no later turn pays another network wait.
   if code == 401 or code == 403:
     let detail = body[0 .. min(body.high, 400)]
-    if "Model access is denied" in body and
-        client.tryNextBedrockModel("no model access"):
-      raise newException(CogballError, "bedrock model access denied: " & detail)
     client.disabled = true
     raise newException(CogballError,
       "llm auth failed (" & $code & "): " & detail)
   if code == 429:
     let detail = body[0 .. min(body.high, 300)]
-    discard client.tryNextBedrockModel("throttled")
     raise newException(CogballError, "llm throttled (429): " & detail)
   if code < 200 or code >= 300:
     raise newException(CogballError, "llm error " & $code & ": " &
