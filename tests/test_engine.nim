@@ -7,7 +7,6 @@
 
 import std/[json, monotimes, os, strutils]
 import lib/helpers
-import cogball/llm
 import cogball/server
 import cogball/replays
 
@@ -37,7 +36,7 @@ proc parallelFake(reply: string, delayMs = 30): BatchFn =
 
 proc llmSeats(engine: TurnEngine) =
   for seat in Seat:
-    engine.policies[seat] = SeatPolicy(kind: pkLlm, prompt: "be brave",
+    engine.policies[seat] = SeatPolicy(kind: pkLlm,
       label: "test", connected: true)
 
 const GoodReply = """{"note":"hold the shape","robots":[
@@ -48,7 +47,7 @@ const GoodReply = """{"note":"hold the shape","robots":[
 proc oneParallelBatch() =
   windows.setLen(0)
   var sim = playing(testConfig())
-  var engine = newTurnEngine(nil, parallelFake(GoodReply))
+  var engine = newTurnEngine(parallelFake(GoodReply))
   engine.llmSeats()
   engine.turn(sim, 0, 0)
   doAssert windows.len == 2,
@@ -74,7 +73,7 @@ proc perTurnBudgetIsEnforced() =
   sim.config.turnBudgetMs = 300
   sim.config.attempt1Ms = 200
   sim.config.retryMs = 100
-  var engine = newTurnEngine(nil,
+  var engine = newTurnEngine(
     proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -104,7 +103,7 @@ proc exactlyOneRetry() =
   ## scripted fallback.
   var sim = playing(testConfig())
   var attempts = 0
-  var engine = newTurnEngine(nil,
+  var engine = newTurnEngine(
     proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -121,7 +120,7 @@ proc exactlyOneRetry() =
     doAssert sim.activeDirective[seat].source == dsLlm,
       "the retry did not land"
 
-  var always = newTurnEngine(nil,
+  var always = newTurnEngine(
     proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
         {.closure, gcsafe.} =
       for call in calls:
@@ -154,7 +153,7 @@ proc transportErrorsAreLabelledByCause() =
                         "transport_error"),
                        ("", "transport_error")]:
     var sim = playing(testConfig())
-    var engine = newTurnEngine(nil,
+    var engine = newTurnEngine(
       proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
           {.closure, gcsafe.} =
         for call in calls:
@@ -180,7 +179,7 @@ proc attemptDeadlinesFitTheTurnBudget() =
   ## millisecond configuration. It must fit inside turnBudgetMs.
   var sim = playing(testConfig())
   var granted: seq[int]
-  var engine = newTurnEngine(nil,
+  var engine = newTurnEngine(
     proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -210,7 +209,7 @@ proc budgetGuardFires() =
   ## ends complete/full_time rather than deadline.
   var sim = playing(testConfig())
   var calls = 0
-  var engine = newTurnEngine(nil,
+  var engine = newTurnEngine(
     proc (batch: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -240,7 +239,7 @@ proc budgetGuardStillEndsFullTime() =
   ## plays the episode out.
   var sim = playing(testConfig(maxTicks = 600))
   var calls = 0
-  var engine = newTurnEngine(nil,
+  var engine = newTurnEngine(
     proc (batch: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -282,11 +281,10 @@ proc budgetGuardStillEndsFullTime() =
     doAssert sim.stats[seat].llmTurns == 0
   report "a guarded match finishes on the scripted layer, complete/full_time"
 
-proc noCredentialsFallsBackInstantly() =
-  ## With no client at all every turn falls back with NO network wait, which is
-  ## what makes offline certification complete in seconds.
+proc missingPlayerFallsBackInstantly() =
+  ## With no player transport every turn falls back without a network wait.
   var sim = playing(testConfig())
-  var engine = newTurnEngine(nil, nil)
+  var engine = newTurnEngine(nil)
   engine.llmSeats()
   let started = nowMs()
   for turn in 0 ..< 40:
@@ -296,17 +294,17 @@ proc noCredentialsFallsBackInstantly() =
     "40 credential-free turns took " & $elapsed & " ms"
   for seat in Seat:
     doAssert sim.stats[seat].fallbackTurns == 40
-  report "40 credential-free turns settle in " & $elapsed & " ms"
+  report "40 missing-player turns settle in " & $elapsed & " ms"
 
-proc rejectedCredentialsAreNotNoCredentials() =
-  ## A 401/403 disables the client for the rest of the episode (llm.nim), and
-  ## every later turn then takes the instant-fallback branch. The credentials
-  ## were PRESENT and were rejected, so the recorded cause must not be
-  ## `no_credentials` -- that would send phase 60 hunting for an unset secret
-  ## that was in fact set and wrong.
-  proc causesFor(client: LlmClient, batch: BatchFn): seq[string] =
+proc playerFallbackCauseIsPreserved() =
+  ## The player owns credentials, so its typed failure cause reaches replay.
+  proc causesFor(cause: string): seq[string] =
     var sim = playing(testConfig())
-    var engine = newTurnEngine(client, batch)
+    var engine = newTurnEngine(
+      proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+          {.closure, gcsafe.} =
+        for call in calls:
+          result.add BatchReply(seat: call.seat, error: cause, cause: cause))
     engine.llmSeats()
     engine.turn(sim, 4, 0)
     for seat in Seat:
@@ -316,34 +314,17 @@ proc rejectedCredentialsAreNotNoCredentials() =
       if node{"k"}.getStr() == "fallback":
         result.add(node{"cause"}.getStr())
 
-  let live = proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
-      {.closure, gcsafe.} =
-    for call in calls:
-      result.add BatchReply(seat: call.seat, ok: true, text: GoodReply)
-
-  let rejected = causesFor(
-    LlmClient(transport: ltAnthropic, disabled: true), live)
-  doAssert rejected.len == 2, "expected one record per seat"
-  for cause in rejected:
-    doAssert cause == "transport_error",
-      "a rejected credential was recorded as `" & cause & "`"
-
-  let absent = causesFor(LlmClient(transport: ltNone, disabled: true), live)
-  doAssert absent.len == 2
-  for cause in absent:
-    doAssert cause == "no_credentials",
-      "an absent credential was recorded as `" & cause & "`"
-
-  let noTransport = causesFor(nil, nil)
-  doAssert noTransport.len == 2
-  for cause in noTransport:
-    doAssert cause == "no_credentials"
-  report "a rejected credential is a transport_error, not no_credentials"
+  for cause in ["no_credentials", "transport_error"]:
+    let reported = causesFor(cause)
+    doAssert reported.len == 4
+    for seen in reported:
+      doAssert seen == cause
+  report "the player's fallback cause reaches the game-owned replay"
 
 proc scriptedSeatsNeverCallOut() =
   var sim = playing(testConfig())
   var calls = 0
-  var engine = newTurnEngine(nil,
+  var engine = newTurnEngine(
     proc (batch: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -351,7 +332,7 @@ proc scriptedSeatsNeverCallOut() =
       for call in batch:
         result.add BatchReply(seat: call.seat, ok: true, text: GoodReply))
   engine.policies[Azure] = SeatPolicy(kind: pkScripted, baseline: "formation")
-  engine.policies[Crimson] = SeatPolicy(kind: pkLlm, prompt: "p")
+  engine.policies[Crimson] = SeatPolicy(kind: pkLlm)
   engine.turn(sim, 0, 0)
   doAssert calls == 1, "expected one batch, saw " & $calls
   doAssert sim.activeDirective[Azure].source == dsScripted
@@ -425,7 +406,7 @@ proc hostErrorIsAReachableEnding() =
                    "writeArtifacts()", "raise"]:
     doAssert source.contains(fragment),
       "the host-error path lost `" & fragment & "`"
-  let handler = source[source.find("except CatchableError as failure:") .. ^1]
+  let handler = source[source.rfind("except CatchableError as failure:") .. ^1]
   doAssert handler.find("sim.hostErrorStop()") <
     handler.find("writeArtifacts()"),
     "the verdict must be set before the artifacts are written"
@@ -597,7 +578,7 @@ proc disconnectKeepsPlaying() =
   ## A seat that drops mid-match keeps playing on the scripted layer, and
   ## revives on reconnect. No failure mode leaves a robot unactuated.
   var sim = playing(testConfig())
-  var engine = newTurnEngine(nil, parallelFake(GoodReply))
+  var engine = newTurnEngine(parallelFake(GoodReply))
   engine.llmSeats()
   engine.turn(sim, 0, 0)
   doAssert sim.activeDirective[Crimson].source == dsLlm
@@ -611,7 +592,7 @@ proc disconnectKeepsPlaying() =
     if masks[i] != 0:
       inc actuated
   doAssert actuated > 0, "the dropped seat's trio went inert"
-  engine.policies[Crimson] = SeatPolicy(kind: pkLlm, prompt: "back")
+  engine.policies[Crimson] = SeatPolicy(kind: pkLlm)
   engine.turn(sim, 2, 0)
   doAssert sim.activeDirective[Crimson].source == dsLlm,
     "the seat did not revive on reconnect"
@@ -626,8 +607,8 @@ when isMainModule:
   attemptDeadlinesFitTheTurnBudget()
   budgetGuardFires()
   budgetGuardStillEndsFullTime()
-  noCredentialsFallsBackInstantly()
-  rejectedCredentialsAreNotNoCredentials()
+  missingPlayerFallsBackInstantly()
+  playerFallbackCauseIsPreserved()
   scriptedSeatsNeverCallOut()
   mercyAndWallClock()
   hostErrorIsAReachableEnding()

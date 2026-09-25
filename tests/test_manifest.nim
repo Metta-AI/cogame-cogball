@@ -169,8 +169,8 @@ proc imageAndEntrypoints() =
   doAssert manifest["game"]["runnable"]["image"].getStr() == "{{COGBALL_IMAGE}}",
     "the manifest placeholder does not match the compose service name"
   doAssert manifest["game"]["runnable"]["run"][0].getStr() == "/bin/cogball"
-  doAssert manifest["game"]["runnable"]["env"]["ANTHROPIC_API_KEY_URI"]
-    .getStr() == "secret://coworld/cogball/anthropic_api_key"
+  doAssert not manifest["game"]["runnable"].hasKey("env"),
+    "the game must not receive a player model secret"
   doAssert manifest["player"][0]["image"].getStr() == "{{COGBALL_IMAGE}}",
     "the bundled player must come out of the SAME image"
   doAssert manifest["player"][0]["run"][0].getStr() == "/bin/cogball-player"
@@ -183,12 +183,13 @@ proc imageAndEntrypoints() =
   report "one image, two entrypoints, and the placeholder matches compose"
 
 proc policiesAreTheRightShape() =
-  ## Two LLM prompt policies and two scripted baselines, all env-switched out
+  ## Two prompt policies, two scripted baselines and Jev, all env-switched out
   ## of one image, with champion #2 owned by the second identity.
   let policies = parseJson(readFile("tools/ci/policies.json"))
-  doAssert policies.len == 4, "expected four policies, saw " & $policies.len
+  doAssert policies.len == 5, "expected five policies, saw " & $policies.len
   var prompts = 0
   var scripted = 0
+  var jev = 0
   var owned = 0
   var names: seq[string]
   for policy in policies:
@@ -203,18 +204,22 @@ proc policiesAreTheRightShape() =
       inc scripted
       doAssert policy["env"]["PLAYER_SCRIPTED"].getStr() in
         ["formation", "swarm"]
+    if policy["env"].hasKey("PLAYER_JEV"):
+      inc jev
+      doAssert policy["env"]["PLAYER_JEV"].getStr() == "true"
     if policy.hasKey("player"):
       inc owned
       doAssert policy["player"].getStr().startsWith("ply_")
   doAssert prompts == 2, "expected two LLM champions"
   doAssert scripted == 2, "expected two scripted fillers"
+  doAssert jev == 1, "expected one Jev player policy"
   doAssert owned == 1, "champion #2 must carry its owning player id"
   doAssert names == @["cogball-total", "cogball-counter", "cogball-formation",
-    "cogball-swarm"], $names
+    "cogball-swarm", "cogball-jev"], $names
   # The two champion prompts must actually differ.
   doAssert policies[0]["env"]["PLAYER_PROMPT"].getStr() !=
     policies[1]["env"]["PLAYER_PROMPT"].getStr()
-  report "policies.json: two prompts, two baselines, one image, owner pinned"
+  report "policies.json: two prompts, two baselines, Jev, owner pinned"
 
 proc scaffoldIsExecutable() =
   for path in ["tools/ci/docker_smoke.sh", "tools/build_replay_viewer.sh"]:

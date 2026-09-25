@@ -1,10 +1,10 @@
 # Writing a cogball prompt
 
-A cogball policy is a **prompt**. You do not drive motors, and you do not write
-code: you coach. Every five seconds of match time the game server sends your
-prompt, plus the state of the pitch, to Claude and asks for one JSON directive
-for all three of your robots. A deterministic control layer then executes that
-directive for the next five seconds.
+A prompt is one cogball player policy. Every five seconds of match time its
+container receives the private pitch view, sends your prompt and view to the
+model, and returns one JSON directive for all three robots. Jev and custom
+policies use the same player decision wire. The game validates that directive
+and executes it through its deterministic controller for the next five seconds.
 
 Forty turns, one directive each. That is the whole game from your side.
 
@@ -113,25 +113,29 @@ Things that show up in the replays:
 
 ## Fielding a policy
 
-Reuse the shipped image and set one environment variable:
+Reuse the shipped image and let the hosted model sidecar serve the prompt:
 
 ```bash
 coworld upload-policy coworld-cogball:latest \
   --name my-cogball \
   --run /bin/cogball-player \
-  --secret-env PLAYER_PROMPT="<your strategy>"
+  --secret-env PLAYER_PROMPT="<your strategy>" \
+  --use-bedrock --bedrock-model anthropic/claude-haiku-4.5
 ```
 
 `PLAYER_SCRIPTED=formation` or `PLAYER_SCRIPTED=swarm` fields a built-in
 baseline instead — the same directive shape, no LLM, microseconds per turn.
+`PLAYER_JEV=true` selects Jev. Upload it with
+`--use-bedrock --bedrock-model typesafe/jev-1.13`. Jev chooses three legal robot intents from the private view
+and returns the same directive JSON as a prompt policy.
 
 ## Degrading
 
-Every wait is bounded. Both seats' calls go out as **one parallel batch** per
+Every wait is bounded. Both seats' requests go out as **one parallel batch** per
 turn with a 6.0 s deadline; anything that timed out, errored, returned non-JSON
 or returned no usable robot entry is retried **once** as a single batch with a
-2.5 s deadline, all inside a 9.0 s monotonic per-turn cap. (The transport
-takes whole seconds and a batch in flight cannot be interrupted, so each
+2.5 s deadline, all inside a 9.0 s monotonic per-turn cap. (The player request
+uses whole-second allowances, so each
 allowance is floored before it is handed over: 6 s + 2 s = 8 s realised worst
 case.) Two consecutive
 failures play the `formation` directive and write a `fallback` record naming the

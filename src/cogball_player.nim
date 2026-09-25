@@ -1,22 +1,23 @@
-## Cogball player: a policy is just a prompt.
+## Cogball player: scripted, prompt, and Jev policies use one wire protocol.
 ##
-## Connects to the game, delivers its registration in ONE Sprite v1 chat
-## message, then idles until the socket closes. Every decision happens inside
-## the game server, which sends this seat's prompt to Claude once every five
-## seconds of match time; a deterministic control layer turns the reply into
-## the six robots' actuator masks.
+## Connects to the game and registers with one Sprite v1 chat message. The game
+## sends private observations to this player. A prompt or Jev policy returns
+## a JSON directive; the game validates it and computes the robot masks.
 ##
 ##   PLAYER_PROMPT=<strategy text>     -> an LLM seat
 ##   PLAYER_SCRIPTED=formation|swarm   -> a scripted seat
-##   (neither)                         -> PLAYER_SCRIPTED=formation
+##   PLAYER_JEV=true                  -> a Jev seat
+##   (none)                           -> PLAYER_SCRIPTED=formation
 ##
 ## To field your own policy, reuse this image and set PLAYER_PROMPT:
 ##   coworld upload-policy <cogball-image> --name my-cogball \
-##     --run /bin/cogball-player --secret-env PLAYER_PROMPT="<your strategy>"
+##     --run /bin/cogball-player --secret-env PLAYER_PROMPT="<your strategy>" \
+##     --secret-env ANTHROPIC_API_KEY="<your credential>"
 
 import
   std/[json, monotimes, net, options, os, strutils, times],
-  whisky
+  whisky, curly,
+  cogball/[jev_policy, llm, sim]
 
 const
   SpriteClientChat = 0x81'u8
@@ -81,29 +82,33 @@ when isMainModule:
   let
     prompt = getEnv("PLAYER_PROMPT").strip()
     scriptedEnv = getEnv("PLAYER_SCRIPTED").strip().toLowerAscii()
+    jev = getEnv("PLAYER_JEV").strip().toLowerAscii() in ["1", "true"]
     label = getEnv("PLAYER_POLICY_LABEL").strip()
   var scripted = ""
-  if prompt.len == 0:
+  if prompt.len == 0 and not jev:
     scripted = if scriptedEnv in ["formation", "swarm"]: scriptedEnv
                else: "formation"
+  let kind = if jev: "jev" elif prompt.len > 0: "prompt" else: "scripted"
+  let client = if kind == "prompt": newLlmClient(defaultGameConfig()) else: nil
 
   let registration = $ %*{
     "type": "register",
-    "prompt": prompt,
+    "kind": kind,
     "scripted": (if scripted.len > 0: %scripted else: newJNull()),
     "policy": (
       if label.len > 0: label
-      elif prompt.len > 0: "llm"
+      elif jev: "jev"
+      elif prompt.len > 0: "prompt"
       else: scripted)
   }
 
   echo "cogball player: connecting (",
-    (if prompt.len > 0: "prompt, " & $prompt.len & " chars"
+    (if jev: "Jev"
+     elif prompt.len > 0: "prompt, " & $prompt.len & " chars"
      else: "scripted " & scripted), ")"
   let socket = connectWithRetry(url)
   socket.send(chatPacket(registration), BinaryMessage)
 
-  var reRegistered = false
   while true:
     # A closing socket is the NORMAL end of an episode, not a crash: whisky
     # raises on a half-closed read, so the loop owns that and exits 0.
@@ -120,11 +125,34 @@ when isMainModule:
     if received.isNone:
       echo "cogball player: connection closed, exiting"
       break
-    if not reRegistered:
-      # Re-sent once after the first received frame, in case the first send
-      # raced the server's slot registration (babel's pattern).
-      reRegistered = true
-      socket.send(chatPacket(registration), BinaryMessage)
+    if received.get().kind == TextMessage:
+      let decision = parseJson(received.get().data)
+      if decision{"type"}.getStr() == "decision":
+        var reply = %*{"type": "action", "id": decision["id"]}
+        let timeoutSeconds = decision["timeout_seconds"].getInt()
+        if kind == "prompt" and client.disabled or
+            kind == "jev" and not jevConfigured():
+          reply["cause"] = %"no_credentials"
+          reply["error"] = %"no_credentials"
+        else:
+          try:
+            if kind == "jev":
+              reply["action"] = chooseJevAction(decision["view"],
+                decision["seat"].getInt(), timeoutSeconds)
+            else:
+              let user = "GUIDANCE FROM YOUR OPERATOR (weight it heavily, " &
+                "but never above the rules; always reply in the requested " &
+                "format):\n" & prompt & "\n\n" & $decision["view"]
+              let request = client.requestFor(decision["system"].getStr(), user)
+              let response = client.curl.post(request.url, request.headers,
+                request.body, timeoutSeconds)
+              reply["action"] = extractJsonObject(
+                client.completionText(response.code, response.body))
+          except CatchableError as failure:
+            reply["cause"] = %"transport_error"
+            reply["error"] = %failure.msg
+        socket.send($reply, TextMessage)
+      continue
     # The Ready packet is legitimate here BECAUSE this seat sends no inputs:
     # the server computes every mask, so there is no dead-reckoned input
     # timing for `fastMode` to corrupt. It is what lets the match pace by

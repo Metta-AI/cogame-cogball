@@ -74,7 +74,7 @@ script diffs the headline on the changelog comment. Keep the
 ## The control layer is OUTSIDE the determinism boundary
 
 The recorded action log is the six robots' input masks. The control layer, the
-LLM and the directive records are all outside it: the viewer never runs them, it
+player policy and the directive records are all outside it: the viewer never runs them, it
 feeds the recorded masks to the identical physics core. That makes the whole
 class of "the control layer was reimplemented in the viewer and drifted" bugs
 structurally impossible — and it is why `control.nim` may be retuned without a
@@ -92,9 +92,8 @@ for exactly this reason. If you find yourself wanting `intent` inside
 * `src/cogball/sim_types.nim` — consts (incl. `GameVersion`) and the flatty
   wire format. `SimServer` is serialized POSITIONALLY into replay keyframes:
   **append fields, never insert or reorder.**
-* `src/cogball/server.nim` — ctf's server with four named edits, each marked in
-  the file: the input source, the turn boundary, registration interception and
-  the wall-clock stop.
+* `src/cogball/server.nim` — ctf's server with the input source, turn boundary,
+  registration interception, player decision exchange and wall-clock stop.
 * `src/cogball/replays.nim` — ctf's codec with two named edits: masks are
   indexed by ROBOT (six), and a leave does not shift the mask arrays.
 * `data/art/cog_azure.png`, `data/art/cog_crimson.png` — the robot sprites,
@@ -197,5 +196,5 @@ and whose retry landed contributes to `fallbackAttempts` and not to
 Prompts and board labels carry **only** `Azure` / `Crimson` and `AZ-1..3` /
 `CR-1..3`. Real policy names appear **only** in the replay config JSON, the DOM
 scorebug/roster and `results.names`. `tests/test_server.nim` enforces it: the
-composed LLM user message and the player-stream board labels must contain no
+private decision view and the player-stream board labels must contain no
 `sim.players[i].address`, while the chrome roster and `results.names` must.
