@@ -95,7 +95,7 @@ proc reset(command: JsonNode): JsonNode =
   discard game.addPlayer("azure-policy", 0, "")
   discard game.addPlayer("crimson-policy", 1, "")
   game.startGame()
-  engine = newTurnEngine(nil, nil)
+  engine = newTurnEngine(nil)
   for seat in Seat:
     engine.policies[seat] = SeatPolicy(kind: pkScripted,
       baseline: "formation", label: "formation", connected: true)

@@ -2,8 +2,9 @@
 
 Two protocols matter here: the **player** protocol (what a policy container
 speaks to the game) and the **global** protocol (what a spectator or the static
-replay viewer speaks). Both are Sprite v1 binary websocket streams, exactly as
-in the paintbot lineage.
+replay viewer speaks). Player frames use Sprite v1 binary messages, while
+coaching decisions use JSON WebSocket text messages. Spectator frames use
+Sprite v1.
 
 ## Runtime contract
 
@@ -18,7 +19,7 @@ The game container reads and writes the standard `COGAME_*` URIs:
 | `COGAME_PLAYER_FAILURE_URI` | `{"failed_policy_index": N, "message": "…"}` |
 | `COGAME_EVENTS_URI` | the tier-2 JSON-lines analysis stream (`file://` only) |
 | `COGAME_HOST` / `COGAME_PORT` | the bind address (default `0.0.0.0:8080`) |
-| `ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY_URI` | the coaching credential |
+| player model credentials | supplied only to the selected player policy container |
 
 ## Routes
 
@@ -50,34 +51,53 @@ credentials is refused the same way.
 
 ## The player protocol
 
-### Registration — the only thing a seat ever sends that matters
+### Registration
 
 On connect, a seat sends **one Sprite v1 chat message** (`0x81`, u16 length,
 then the raw payload) carrying:
 
 ```json
 {"type":"register",
- "prompt":"<strategy text or empty>",
+ "kind":"prompt"|"jev"|"scripted",
  "scripted":"formation"|"swarm"|null,
  "policy":"<free label>"}
 ```
 
-* A non-empty `prompt` makes the seat an **LLM seat**: the game server sends
-  that text to Claude once per coaching turn.
-* Otherwise `scripted` selects a built-in baseline; an unknown or absent value
-  is `formation`.
+* `prompt` and `jev` policies receive decision requests over the same player
+  socket. The player runs inference and returns a directive. The game receives
+  no prompt, model credential, or provider response.
+* `scripted` selects a built-in baseline; an unknown or absent value is
+  `formation`.
 * `policy` is a free label, capped at **48 runes**, recorded in the replay.
-* `prompt` is capped at **4000 runes** at the transport (over-long is
-  truncated, never rejected) and is **never** written to the replay or the
-  results.
 
 The payload is read WITHOUT an ASCII filter, so a non-ASCII policy label
-survives to the replay intact. Registration is re-sent once after the first
-received frame, in case the first send raced the slot registration.
+survives to the replay intact. The server retains registration when a player
+connects before its configured seat is admitted.
 
 The server **intercepts** the registration: it is consumed, not written to the
-replay chat stream. A redacted `register` record is written instead. **Any
-other chat text from a player is dropped.**
+replay chat stream. A redacted `register` record is written instead. Other
+Sprite chat text is dropped; decisions use WebSocket text messages.
+
+### Coaching decisions
+
+At a turn boundary the game sends each external coach a WebSocket text message:
+
+```json
+{"type":"decision","id":1,"seat":0,"system":"<system prompt>",
+ "view":{"turn":0},"timeout_seconds":6}
+```
+
+Both seats' requests use the same frozen simulation state and are sent before
+the game waits for either reply. A policy responds on that socket with:
+
+```json
+{"type":"action","id":1,"action":{"note":"...","robots":[...]}}
+```
+
+The game checks the request ID, parses and repairs the directive with the
+production parser, and falls back to `formation` after one retry. A player can
+report `{"type":"action","id":1,"cause":"no_credentials",
+"error":"no_credentials"}`. Results, replay and actuator masks stay game-owned.
 
 ### Frames
 
@@ -91,7 +111,7 @@ three robots; and an invisible `own seat <alias>` marker naming the seat.
 the episode seed; **real player names** (board labels carry only `Azure`/
 `Crimson` and `AZ-1..3`/`CR-1..3`); and future ticks.
 
-A seat sends **no inputs** — the server computes every actuator mask — so the
+A seat sends **no motor inputs** — the server computes every actuator mask — so the
 Sprite v1 Ready packet (`0x85`) is legitimate after each received frame and is
 what lets `fastMode` pace the match by readiness. (ctf's warning about `0x85`
 corrupting input timing is about *player* clients whose own inputs are

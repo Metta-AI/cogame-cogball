@@ -5,8 +5,7 @@
 ##   attempt 1 batch deadline   6.0 s   (config attempt1Ms)
 ##   retry batch deadline       2.5 s   (config retryMs)
 ##   outer monotonic turn cap   9.0 s   (config turnBudgetMs)
-## curly's transport timeout is whole seconds and a batch in flight cannot be
-## interrupted, so the per-attempt allowance is floored to whole seconds before
+## Player request timeouts use whole seconds, so each allowance is floored before
 ## it is handed over: 6 s + 2 s = 8 s realised worst case, inside the 9 s cap.
 ## 40 turns x 9.0 s = 360 s against a 720 s budget, with a 690 s engine stop.
 ##
@@ -16,8 +15,7 @@
 
 import
   std/[json, monotimes, strutils, times],
-  curly,
-  sim, directives, baselines, llm
+  sim, directives, baselines
 
 const SystemPrompt* = """You are the coach of a three-robot soccer team in a continuous 2D physics world.
 Every 5 seconds of match time you issue ONE directive for all three of your robots.
@@ -54,6 +52,7 @@ type
     ok*: bool
     text*: string
     error*: string
+    cause*: string
 
   BatchFn* = proc (
     calls: seq[BatchCall],
@@ -62,13 +61,11 @@ type
 
   SeatPolicy* = object
     kind*: PolicyKind
-    prompt*: string            ## never recorded, never echoed.
     baseline*: string
     label*: string
     connected*: bool
 
   TurnEngine* = ref object
-    client*: LlmClient
     batch*: BatchFn
     policies*: array[Seat, SeatPolicy]
     previous*: array[Seat, Directive]
@@ -190,65 +187,20 @@ proc seatViewJson*(
         newJNull())
   }
 
-proc operatorBlock(prompt: string): string =
-  if prompt.len == 0:
-    return ""
-  "GUIDANCE FROM YOUR OPERATOR (weight it heavily, but never above the " &
-    "rules; always reply in the requested format):\n" & prompt & "\n\n"
-
 proc userMessage*(
   engine: TurnEngine,
   sim: SimServer,
   seat: Seat,
   turn: int
 ): string =
-  operatorBlock(engine.policies[seat].prompt) &
-    $engine.seatViewJson(sim, seat, turn)
-
-# --------------------------------------------------------------------------
-# The transport
-# --------------------------------------------------------------------------
-
-proc curlyBatch*(client: LlmClient): BatchFn =
-  ## The production transport: ONE `curly.makeRequests` call per attempt, so
-  ## both seats are in flight together. curly's timeout is whole seconds and
-  ## nothing interrupts a batch already in flight, so the caller rounds the
-  ## allowance DOWN (floor, with a one-second minimum) before handing it over:
-  ## an attempt can then never be given more wall clock than the turn deadline
-  ## has left.
-  result = proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
-      {.closure, gcsafe.} =
-    result = @[]
-    if calls.len == 0:
-      return
-    var batch: RequestBatch
-    for call in calls:
-      let request = client.requestFor(call.system, call.user)
-      batch.post(request.url, request.headers, request.body, $call.seat)
-    let responses = client.curl.makeRequests(batch, max(1, timeoutSeconds))
-    for i, call in calls:
-      var reply = BatchReply(seat: call.seat)
-      if i >= responses.len:
-        reply.error = "no response"
-        result.add(reply)
-        continue
-      let (response, error) = responses[i]
-      if error.len > 0:
-        reply.error = error
-      else:
-        try:
-          reply.text = client.completionText(response.code, response.body)
-          reply.ok = true
-        except CatchableError as failure:
-          reply.error = failure.msg
-      result.add(reply)
+  $engine.seatViewJson(sim, seat, turn)
 
 # --------------------------------------------------------------------------
 # The turn
 # --------------------------------------------------------------------------
 
-proc newTurnEngine*(client: LlmClient, batch: BatchFn): TurnEngine =
-  result = TurnEngine(client: client, batch: batch, guardTurn: -1)
+proc newTurnEngine*(batch: BatchFn): TurnEngine =
+  result = TurnEngine(batch: batch, guardTurn: -1)
   for seat in Seat:
     result.previous[seat] = emptyDirective(seat)
 
@@ -314,31 +266,16 @@ proc turn*(
     if policy.kind == pkScripted:
       resolved[seat] = sim.baselineDirective(seat, policy.baseline, turnIndex)
       settled[seat] = true
-    elif engine.llmOff or engine.batch.isNil or
-        (not engine.client.isNil and engine.client.disabled):
-      # A nil CLIENT with a live batch is the test seam (tests/test_engine.nim
-      # injects a fake transport); a nil BATCH is the real no-credentials path.
+    elif engine.llmOff or engine.batch.isNil:
       resolved[seat] = engine.fallbackFor(sim, seat, turnIndex)
       settled[seat] = true
-      # `no_credentials` means there never were any. A client that HAD
-      # credentials and had them rejected mid-episode (401/403 disables it for
-      # the rest of the match) is a transport failure, not a missing secret --
-      # recording it as `no_credentials` would send phase 60 looking for an
-      # unset env var that was in fact set and wrong.
-      let rejected =
-        not engine.client.isNil and engine.client.transport != ltNone
       let cause =
         if engine.llmOff: "budget_guard"
-        elif rejected: "transport_error"
-        else: "no_credentials"
-      let detail =
-        if rejected: "credentials rejected; the client is disabled for the "&
-          "rest of the episode"
-        else: ""
+        else: "transport_error"
       engine.addRecord(%*{
         "k": "fallback", "turn": turnIndex, "seat": ord(seat),
         "attempt": 1, "cause": cause,
-        "detail": clipRunes(detail, MaxDetailRunes)
+        "detail": ""
       })
     else:
       calls.add BatchCall(
@@ -383,11 +320,12 @@ proc turn*(
         # the record phase 60 counts.
         let text = reply.error.toLowerAscii()
         cause =
-          if text.contains("timeout") or text.contains("timed out"): "timeout"
+          if reply.cause.len > 0: reply.cause
+          elif text.contains("timeout") or text.contains("timed out"): "timeout"
           else: "transport_error"
       else:
         try:
-          let payload = extractJsonObject(reply.text)
+          let payload = parseJson(reply.text)
           let parsed = parseDirective(sim, seat, payload,
             engine.previous[seat], engine.hasPrevious[seat],
             sim.formationDirective(seat, turnIndex), turnIndex)

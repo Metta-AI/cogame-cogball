@@ -42,7 +42,7 @@ when isMainModule:
     discard game.addPlayer("azure-policy", 0, "")
     discard game.addPlayer("crimson-policy", 1, "")
     game.startGame()
-    let engine = newTurnEngine(nil, nil)
+    let engine = newTurnEngine(nil)
     for seat in Seat:
       engine.policies[seat] = SeatPolicy(kind: pkScripted,
         baseline: "formation", label: "formation", connected: true)

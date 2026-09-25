@@ -169,8 +169,8 @@ proc imageAndEntrypoints() =
   doAssert manifest["game"]["runnable"]["image"].getStr() == "{{COGBALL_IMAGE}}",
     "the manifest placeholder does not match the compose service name"
   doAssert manifest["game"]["runnable"]["run"][0].getStr() == "/bin/cogball"
-  doAssert manifest["game"]["runnable"]["env"]["ANTHROPIC_API_KEY_URI"]
-    .getStr() == "secret://coworld/cogball/anthropic_api_key"
+  doAssert not manifest["game"]["runnable"].hasKey("env"),
+    "the game must not receive a player model secret"
   doAssert manifest["player"][0]["image"].getStr() == "{{COGBALL_IMAGE}}",
     "the bundled player must come out of the SAME image"
   doAssert manifest["player"][0]["run"][0].getStr() == "/bin/cogball-player"

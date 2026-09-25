@@ -6,8 +6,8 @@ it through the opponent's goal mouth. Nothing is gridded: positions and
 velocities are continuous fixed-point quantities, and the only discrete things
 in the world are the tick, the actuator bits and the kick.
 
-**A policy is just a prompt.** A seat does not drive motors. Every five seconds
-of match time it issues ONE directive for all three of its robots — a role, an
+**A player policy is a coach.** Every five seconds of match time its container
+receives a private pitch view and returns ONE directive for all three robots — a role, an
 intent, a target point and a kick permission each — and a deterministic control
 layer executes it for the next five seconds. Forty turns, one directive each.
 Passing, positioning and role emergence are the whole game.
@@ -49,9 +49,15 @@ One image, two entrypoints, every policy env-switched:
 docker run --rm -e COGAME_CONFIG_URI=file:///coworld/config.json \
   coworld-cogball:latest /bin/cogball
 
-# an LLM seat
+# a prompt policy; give this player its own model credential
 docker run --rm -e COWORLD_PLAYER_WS_URL=ws://game:8080/player?slot=0 \
   -e PLAYER_PROMPT="Play total football: never leave your own goal empty…" \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  coworld-cogball:latest /bin/cogball-player
+
+# a Jev policy over the same private view and directive wire
+docker run --rm -e COWORLD_PLAYER_WS_URL=ws://game:8080/player?slot=0 \
+  -e PLAYER_JEV=true -e TYPESAFE_API_KEY="$TYPESAFE_API_KEY" \
   coworld-cogball:latest /bin/cogball-player
 
 # a scripted seat
@@ -62,7 +68,7 @@ docker run --rm -e COWORLD_PLAYER_WS_URL=ws://game:8080/player?slot=1 \
 
 `formation` is the reference baseline (one keeper on the arc, the nearest robot
 on the ball, the third in the channel) and also the fallback whenever a coaching
-call fails twice. `swarm` is the second filler — everyone chases — deliberately
+reply fails twice. `swarm` is the second filler — everyone chases — deliberately
 weaker, so the ladder has a spread.
 
 ## Watching
@@ -84,7 +90,7 @@ the back's shuttle and the striker's runs separate visually, with no labels.
 
 ```
 src/cogball.nim              game entrypoint (seed randomisation lives here)
-src/cogball_player.nim       every policy: registers, then idles
+src/cogball_player.nim       prompt and Jev decisions over the player socket
 src/cogball/
   sim_types.nim              consts (incl. GameVersion), types, wire format
   trig.nim                   the committed SinQ12 table, isqrt, bradsOfVectorI
@@ -93,7 +99,8 @@ src/cogball/
   control.nim                directive -> six actuator masks (integer only)
   directives.nim             view coordinates, rune truncation, the parser
   baselines.nim              the formation and swarm scripted policies
-  llm.nim                    the credential ladder and transport
+  llm.nim                    player-side prompt credential ladder and transport
+  jev_policy.nim             player-side Jev choice over private views
   decide.nim                 the turn engine: one parallel batch per turn
   server.nim                 mummy HTTP/ws, the COGAME_* contract, the loop
   replays.nim                the COWLDBAL codec, keyframes, the scan

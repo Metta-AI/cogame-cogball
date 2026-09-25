@@ -1,5 +1,5 @@
 ## The LLM client: credential ladder and transport, ported from
-## `cogame-babel/src/babel/llm.nim` into the ctf-lineage server.
+## `cogame-babel/src/babel/llm.nim` into the ctf-lineage player.
 ##
 ## coworld-ctf has no LLM client in its episode server (its campaign strategist
 ## is a platform-side feature that ships with the `coworld` package in
@@ -14,11 +14,8 @@
 ## instantly with NO network wait, so offline certification completes in
 ## seconds. That fallback is load-bearing.
 ##
-## The decision happens in the GAME server, not the player container: the
-## `anthropic_api_key` coworld secret is injected into the game pod, phase 60
-## greps the GAME log for `falling back`, and keeping the control layer
-## server-side is what makes the recorded action log reproducible with no
-## network in the loop.
+## The player owns inference and its credential. The game owns directive
+## validation, actuator masks, fallback, results and replay.
 
 import
   std/[json, os, strutils],
@@ -36,8 +33,7 @@ type
     ltNone, ltBedrock, ltAnthropic
 
   LlmRequest* = object
-    ## One prepared HTTP call. `decide.nim` collects both seats' requests and
-    ## issues them as ONE parallel batch per turn.
+    ## One prepared HTTP call made by the prompt player.
     url*: string
     headers*: HttpHeaders
     body*: string
