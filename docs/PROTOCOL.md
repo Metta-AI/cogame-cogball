@@ -58,12 +58,12 @@ then the raw payload) carrying:
 
 ```json
 {"type":"register",
- "kind":"prompt"|"jev"|"scripted",
+ "kind":"prompt"|"external"|"scripted",
  "scripted":"formation"|"swarm"|null,
  "policy":"<free label>"}
 ```
 
-* `prompt` and `jev` policies receive decision requests over the same player
+* `prompt` and `external` policies receive decision requests over the same player
   socket. The player runs inference and returns a directive. The game receives
   no prompt, model credential, or provider response.
 * `scripted` selects a built-in baseline; an unknown or absent value is

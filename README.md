@@ -55,11 +55,6 @@ docker run --rm -e COWORLD_PLAYER_WS_URL=ws://game:8080/player?slot=0 \
   -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
   coworld-cogball:latest /bin/cogball-player
 
-# a Jev policy over the same private view and directive wire
-docker run --rm -e COWORLD_PLAYER_WS_URL=ws://game:8080/player?slot=0 \
-  -e PLAYER_JEV=true -e TYPESAFE_API_KEY="$TYPESAFE_API_KEY" \
-  coworld-cogball:latest /bin/cogball-player
-
 # a scripted seat
 docker run --rm -e COWORLD_PLAYER_WS_URL=ws://game:8080/player?slot=1 \
   -e PLAYER_SCRIPTED=formation \
@@ -90,7 +85,7 @@ the back's shuttle and the striker's runs separate visually, with no labels.
 
 ```
 src/cogball.nim              game entrypoint (seed randomisation lives here)
-src/cogball_player.nim       prompt and Jev decisions over the player socket
+src/cogball_player.nim       prompt decisions over the player socket
 src/cogball/
   sim_types.nim              consts (incl. GameVersion), types, wire format
   trig.nim                   the committed SinQ12 table, isqrt, bradsOfVectorI
@@ -100,7 +95,6 @@ src/cogball/
   directives.nim             view coordinates, rune truncation, the parser
   baselines.nim              the formation and swarm scripted policies
   llm.nim                    player-side prompt credential ladder and transport
-  jev_policy.nim             player-side Jev choice over private views
   decide.nim                 the turn engine: one parallel batch per turn
   server.nim                 mummy HTTP/ws, the COGAME_* contract, the loop
   replays.nim                the COWLDBAL codec, keyframes, the scan

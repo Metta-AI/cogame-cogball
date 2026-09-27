@@ -249,8 +249,6 @@ jobs:
                       cmd += ["--secret-env", f"{key}={value}"]
                   if (row.get("env") or {}).get("PLAYER_PROMPT"):
                       cmd += ["--use-bedrock", "--bedrock-model", "anthropic/claude-haiku-4.5"]
-                  if (row.get("env") or {}).get("PLAYER_JEV"):
-                      cmd += ["--use-bedrock", "--bedrock-model", "typesafe/jev-1.13"]
                   # The command is NOT echoed: --secret-env values are policy secrets.
                   print(f"::group::upload-policy {name} ({image}) as {player or 'the token owner'}",
                         flush=True)

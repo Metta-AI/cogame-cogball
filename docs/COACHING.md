@@ -2,7 +2,7 @@
 
 A prompt is one cogball player policy. Every five seconds of match time its
 container receives the private pitch view, sends your prompt and view to the
-model, and returns one JSON directive for all three robots. Jev and custom
+model, and returns one JSON directive for all three robots. External
 policies use the same player decision wire. The game validates that directive
 and executes it through its deterministic controller for the next five seconds.
 
@@ -125,9 +125,6 @@ coworld upload-policy coworld-cogball:latest \
 
 `PLAYER_SCRIPTED=formation` or `PLAYER_SCRIPTED=swarm` fields a built-in
 baseline instead — the same directive shape, no LLM, microseconds per turn.
-`PLAYER_JEV=true` selects Jev. Upload it with
-`--use-bedrock --bedrock-model typesafe/jev-1.13`. Jev chooses three legal robot intents from the private view
-and returns the same directive JSON as a prompt policy.
 
 ## Degrading
 

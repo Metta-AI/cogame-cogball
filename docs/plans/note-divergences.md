@@ -199,7 +199,7 @@ used to. Nothing here touches the sim: the sprite is broadcast-only, outside
 is unchanged — it was already per-team character art, not a placeholder.
 \n# Player-side coaching decisions
 
-The accepted note placed model inference in the game server. Prompt and Jev
+The accepted note placed model inference in the game server. Prompt and external
 decisions now run in ordinary player containers. The game sends both private
 views before waiting for either reply, validates both directives with the same
 parser, and keeps the actuator log, results and replay. The source of each
