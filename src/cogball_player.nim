@@ -1,12 +1,11 @@
-## Cogball player: scripted, prompt, and Jev policies use one wire protocol.
+## Cogball player: scripted and prompt policies use one wire protocol.
 ##
 ## Connects to the game and registers with one Sprite v1 chat message. The game
-## sends private observations to this player. A prompt or Jev policy returns
+## sends private observations to this player. A prompt policy returns
 ## a JSON directive; the game validates it and computes the robot masks.
 ##
 ##   PLAYER_PROMPT=<strategy text>     -> an LLM seat
 ##   PLAYER_SCRIPTED=formation|swarm   -> a scripted seat
-##   PLAYER_JEV=true                  -> a Jev seat
 ##   (none)                           -> PLAYER_SCRIPTED=formation
 ##
 ## To field your own policy, reuse this image and set PLAYER_PROMPT:
@@ -17,7 +16,7 @@
 import
   std/[json, monotimes, net, options, os, strutils, times],
   whisky, curly,
-  cogball/[jev_policy, llm, sim]
+  cogball/[llm, sim]
 
 const
   SpriteClientChat = 0x81'u8
@@ -82,13 +81,12 @@ when isMainModule:
   let
     prompt = getEnv("PLAYER_PROMPT").strip()
     scriptedEnv = getEnv("PLAYER_SCRIPTED").strip().toLowerAscii()
-    jev = getEnv("PLAYER_JEV").strip().toLowerAscii() in ["1", "true"]
     label = getEnv("PLAYER_POLICY_LABEL").strip()
   var scripted = ""
-  if prompt.len == 0 and not jev:
+  if prompt.len == 0:
     scripted = if scriptedEnv in ["formation", "swarm"]: scriptedEnv
                else: "formation"
-  let kind = if jev: "jev" elif prompt.len > 0: "prompt" else: "scripted"
+  let kind = if prompt.len > 0: "prompt" else: "scripted"
   let client = if kind == "prompt": newLlmClient(defaultGameConfig()) else: nil
 
   let registration = $ %*{
@@ -97,14 +95,12 @@ when isMainModule:
     "scripted": (if scripted.len > 0: %scripted else: newJNull()),
     "policy": (
       if label.len > 0: label
-      elif jev: "jev"
       elif prompt.len > 0: "prompt"
       else: scripted)
   }
 
   echo "cogball player: connecting (",
-    (if jev: "Jev"
-     elif prompt.len > 0: "prompt, " & $prompt.len & " chars"
+    (if prompt.len > 0: "prompt, " & $prompt.len & " chars"
      else: "scripted " & scripted), ")"
   let socket = connectWithRetry(url)
   socket.send(chatPacket(registration), BinaryMessage)
@@ -130,24 +126,19 @@ when isMainModule:
       if decision{"type"}.getStr() == "decision":
         var reply = %*{"type": "action", "id": decision["id"]}
         let timeoutSeconds = decision["timeout_seconds"].getInt()
-        if kind == "prompt" and client.disabled or
-            kind == "jev" and not jevConfigured():
+        if kind == "prompt" and client.disabled:
           reply["cause"] = %"no_credentials"
           reply["error"] = %"no_credentials"
         else:
           try:
-            if kind == "jev":
-              reply["action"] = chooseJevAction(decision["view"],
-                decision["seat"].getInt(), timeoutSeconds)
-            else:
-              let user = "GUIDANCE FROM YOUR OPERATOR (weight it heavily, " &
-                "but never above the rules; always reply in the requested " &
-                "format):\n" & prompt & "\n\n" & $decision["view"]
-              let request = client.requestFor(decision["system"].getStr(), user)
-              let response = client.curl.post(request.url, request.headers,
-                request.body, timeoutSeconds)
-              reply["action"] = extractJsonObject(
-                client.completionText(response.code, response.body))
+            let user = "GUIDANCE FROM YOUR OPERATOR (weight it heavily, " &
+              "but never above the rules; always reply in the requested " &
+              "format):\n" & prompt & "\n\n" & $decision["view"]
+            let request = client.requestFor(decision["system"].getStr(), user)
+            let response = client.curl.post(request.url, request.headers,
+              request.body, timeoutSeconds)
+            reply["action"] = extractJsonObject(
+              client.completionText(response.code, response.body))
           except CatchableError as failure:
             reply["cause"] = %"transport_error"
             reply["error"] = %failure.msg

@@ -414,7 +414,7 @@ proc registrationOf*(
   let kind = parsed.node{"kind"}.getStr()
   let scripted = parsed.node{"scripted"}
   let label = clipRunes(parsed.node{"policy"}.getStr(), MaxPolicyRunes)
-  if kind in ["prompt", "jev"]:
+  if kind in ["prompt", "external"]:
     policy.kind = pkLlm
     policy.baseline = ""
   else:
