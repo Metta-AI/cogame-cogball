@@ -134,7 +134,7 @@ when isMainModule:
             let user = "GUIDANCE FROM YOUR OPERATOR (weight it heavily, " &
               "but never above the rules; always reply in the requested " &
               "format):\n" & prompt & "\n\n" & $decision["view"]
-            let request = client.requestFor(decision["system"].getStr(), user)
+            let request = client.requestFor(decision["system"].getStr(), user, -1)
             let response = client.curl.post(request.url, request.headers,
               request.body, timeoutSeconds)
             reply["action"] = extractJsonObject(

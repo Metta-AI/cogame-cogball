@@ -62,11 +62,11 @@ proc newLlmClient*(config: GameConfig): LlmClient =
     model: config.model,
     maxOutputTokens: config.maxOutputTokens
   )
-  let sidecarEndpoint = getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").strip()
+  let sidecarEndpoint = getEnv("COWORLD_LLM_ENDPOINT").strip()
   if sidecarEndpoint.len > 0:
     result.transport = ltSidecar
     result.sidecarEndpoint = sidecarEndpoint.strip(chars = {'/'}, leading = false)
-    result.model = getEnv("BEDROCK_MODEL")
+    result.model = getEnv("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5")
     result.curl = newCurly()
     echo "cogball llm: sidecar transport, model ", result.model
     return
@@ -80,7 +80,7 @@ proc newLlmClient*(config: GameConfig): LlmClient =
     result.disabled = true
     echo "cogball llm: no LLM credentials; using scripted fallback"
 
-proc requestFor*(client: LlmClient, system, user: string): LlmRequest =
+proc requestFor*(client: LlmClient, system, user: string, slot: int): LlmRequest =
   ## Both routes speak Anthropic Messages. Haiku 4.5 rejects effort settings.
   var body = %*{
     "model": client.model,
@@ -89,6 +89,8 @@ proc requestFor*(client: LlmClient, system, user: string): LlmRequest =
     "messages": [{"role": "user", "content": user}]
   }
   result.headers["content-type"] = "application/json"
+  if client.transport == ltSidecar and slot >= 0:
+    result.headers["X-Coworld-Player-Slot"] = $slot
   result.headers["anthropic-version"] = AnthropicVersion
   if client.transport == ltSidecar:
     result.url = client.sidecarEndpoint & "/v1/messages"
