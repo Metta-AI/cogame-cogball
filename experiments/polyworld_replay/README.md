@@ -1,7 +1,7 @@
 # Experimental Polyworld replay slice
 
-This is a native presentation experiment, not a replacement for the hosted
-Cogball viewer. It consumes the original COWLDBAL codec and recorded six robot
+This is a native and browser presentation experiment, not a replacement for the
+hosted Cogball viewer. It consumes the original COWLDBAL codec and recorded six robot
 masks through Cogball's unchanged replay runtime. Two policy seats still own
 three robots each. No control, physics, game version, golden or vendor pin changes.
 
@@ -71,6 +71,33 @@ Keep binaries, caches, traces and frames in a private evidence directory.
    Compare its state sidecar with that tick in the native trace, then inspect the
    frame for three robots of each team, the ball and the recorded score.
 
+4. For the bounded browser adapter, first compile `export_browser_replay.nim`
+   with step 1's native flags and dependency paths. This allowlists simulation
+   config, anonymizes joins and drops chat, debug and client-input records. It
+   refuses to qualify the export unless every public state and recorded hash
+   matches the original. The committed input fixture remains unchanged.
+
+   ```sh
+   public-export tests/fixtures/cogball-679961.bitreplay /private/public.bitreplay
+   ```
+
+   Create a private `static` output directory and copy `browser/index.html` and
+   `browser/replay.js` there. Compile `browser/entry.nim` with
+   `--skipParentCfg:on -d:emscripten --parallelBuild:1` and step 3's dependency
+   paths, setting `COGBALL_BROWSER_OUTPUT` to that directory and
+   `COGBALL_BROWSER_REPLAY` to the qualified public replay. Its local config
+   packages only game art/fonts and that public replay, caps WASM memory at
+   256 MiB and requests WebGL2. The entry uses the same live-runtime exit as the
+   shipped viewer so Nim globals survive later exported JavaScript calls.
+
+   Serve only the five emitted static resources on loopback; keep the original
+   fixture, native oracle, caches and logs outside the served directory. Under
+   the unchanged host FIFO, use one isolated installed agent-browser session
+   with CPU/softwareGL, one CPU and finite runtime/memory/zero-swap bounds.
+   Exercise Play/Pause, tick Seek and viewport resize. Compare browser state
+   and decimal-string hashes with the native trace; retain actual screenshots
+   and binary/toolchain identities privately. No new dependencies are required.
+
 ## Executed decision and limits
 
 The committed 48,288-byte fixture (Git blob
@@ -80,9 +107,27 @@ The value snapshot and actual software-rendered scene preserve authority.
 This supports proceeding with a **planar replay presentation prototype** while
 keeping Cogball's custom integer simulation and codec.
 
-It does not establish a full game migration, browser WebGL adapter, hosted
-integration, asset/UI parity, private coaching UI or graphics speedup. The
-primitive prototype omits original robot art, broadcast chrome and goal FX.
+The browser followup also passed ten seeks against native state, actual Play /
+Pause from tick 1127 through 1129, and resize from a 960×720 canvas to 360×640.
+Thirty explicit Polyworld draws preserve the whole serialized authority state;
+resize and playback pause preserve the expected public state. Actual WebGL2
+framebuffer readback and two screenshots show the six robots, ball and 0–1 / 1–1
+scores. The measured backend was ANGLE SwiftShader. Private sentinels were
+excluded and an authored corrupted recorded hash was rejected without changing
+the active replay. All 1,353 states match after removing 23 original strategy
+records from the browser input. The entire owned FIFO session, including compilation,
+readback and browser/server cleanup, stayed within 20 minutes, with a 2 GiB
+cgroup memory limit and zero swap.
+
+This does not establish a full game migration, hosted integration, asset/UI
+parity, private coaching UI or graphics speedup. This browser entry binds its tick
+controls to the retained 0–1352 fixture and advances one tick per presentation
+interval; it does not reproduce the original viewer's speed, lull, loop or timing
+controls. The narrow viewport fits the pitch with letterboxing; its simple status
+line can overflow horizontally. Public replay resources necessarily include the
+recorded input sequence and simulation seed, while the exported current-state
+payload excludes them. The export proof qualifies this fixture; arbitrary replays
+must pass the same equality check before use. The primitive prototype omits original robot art, broadcast chrome and goal FX.
 The score display supports 0–9 and rejects larger scores. Polyworld's shapes
 apply their existing half-alpha tint; colors are not claimed to match the old
 viewer. The engine lock differs from the game's dependency lock: this slice
