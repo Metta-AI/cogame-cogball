@@ -57,7 +57,7 @@ type
     loadingReplayUri: string
     currentReplayUri: string
     chatMessages: Table[WebSocket, string]
-    actionMessages: Table[WebSocket, string]
+    actionMessages: Table[WebSocket, seq[string]]
     nextDecisionId: int
     playerIndices: Table[WebSocket, int]
     playerAddresses: Table[WebSocket, string]
@@ -104,7 +104,7 @@ var replayBytesForClients {.threadvar.}: string
 proc initAppState() =
   initLock(appState.lock)
   appState.chatMessages = initTable[WebSocket, string]()
-  appState.actionMessages = initTable[WebSocket, string]()
+  appState.actionMessages = initTable[WebSocket, seq[string]]()
   appState.nextDecisionId = 0
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerAddresses = initTable[WebSocket, string]()
@@ -315,7 +315,7 @@ proc websocketHandler(
       {.gcsafe.}:
         withLock appState.lock:
           if websocket in appState.playerViewers:
-            appState.actionMessages[websocket] = message.data
+            appState.actionMessages.mgetOrPut(websocket, @[]).add(message.data)
   of ErrorEvent, CloseEvent:
     var who = ""
     {.gcsafe.}:
@@ -481,38 +481,43 @@ proc playerBatch(
         if result[position].ok or result[position].error.len > 0:
           continue
         let socket = seatSockets[Seat(call.seat)]
-        var raw = ""
+        var messages: seq[string]
         {.gcsafe.}:
           withLock appState.lock:
             if appState.actionMessages.hasKey(socket):
-              raw = appState.actionMessages[socket]
+              messages = appState.actionMessages[socket]
               appState.actionMessages.del(socket)
-        if raw.len == 0:
+        for raw in messages:
+          if result[position].ok or result[position].error.len > 0: break
+          try:
+            let answer = parseJson(raw)
+            if answer{"id"}.getInt() != requestId: continue
+            let kind = answer{"type"}.getStr()
+            if kind notin ["action", "attempt_started"]: continue
+            if answer.hasKey("training_attempt") and answer["training_attempt"].kind != JNull:
+              var evidence = readAttemptEvidence(answer["training_attempt"])
+              if evidence.origin in {aoTeacher, aoHuman}: evidence.origin = aoUnknown
+              if result[position].evidence.isSome:
+                let started = result[position].evidence.get()
+                if kind == "attempt_started" or evidence.prompt != started.prompt or evidence.request != started.request:
+                  raise newException(CogballError, "attempt evidence changed its started request")
+              result[position].evidence = some(evidence)
+            if kind == "attempt_started": continue
+            if answer.hasKey("action") and answer["action"].kind == JObject:
+              result[position].ok = true
+              result[position].text = $answer["action"]
+            else:
+              result[position].error = answer{"error"}.getStr("player fallback")
+              let cause = answer{"cause"}.getStr()
+              result[position].cause =
+                if cause in ["no_credentials", "timeout", "parse_error"]:
+                  cause
+                else:
+                  "transport_error"
+          except CatchableError:
+            result[position].error = "invalid player response"
+        if not result[position].ok and result[position].error.len == 0:
           pending = true
-          continue
-        try:
-          let answer = parseJson(raw)
-          if answer{"type"}.getStr() != "action" or
-              answer{"id"}.getInt() != requestId:
-            pending = true
-            continue
-          if answer.hasKey("training_attempt") and answer["training_attempt"].kind != JNull:
-            var evidence = readAttemptEvidence(answer["training_attempt"])
-            if evidence.origin in {aoTeacher, aoHuman}: evidence.origin = aoUnknown
-            result[position].evidence = some(evidence)
-          if answer.hasKey("action") and answer["action"].kind == JObject:
-            result[position].ok = true
-            result[position].text = $answer["action"]
-          else:
-            result[position].error = answer{"error"}.getStr("player fallback")
-            let cause = answer{"cause"}.getStr()
-            result[position].cause =
-              if cause in ["no_credentials", "timeout", "parse_error"]:
-                cause
-              else:
-                "transport_error"
-        except CatchableError:
-          result[position].error = "invalid player response"
       if not pending:
         break
       sleep(10)

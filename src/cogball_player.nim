@@ -146,6 +146,8 @@ when isMainModule:
             evidence.model = some(client.model)
             evidence.decoder = %*{"temperature": client.temperature,
               "max_tokens": client.maxOutputTokens}
+            socket.send($( %*{"type": "attempt_started", "id": decision["id"],
+              "training_attempt": attemptEvidenceJson(evidence)}), TextMessage)
             let response = client.curl.post(request.url, request.headers,
               request.body, timeoutSeconds)
             evidence.responseEvidence(response.headers, response.body)
