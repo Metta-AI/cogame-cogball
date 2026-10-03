@@ -63,9 +63,9 @@ proc playMatch(seed, maxTicks: int, azure, crimson: string): MatchResult =
       if elapsed mod sim.turnTicks() == 0 or
           not (sim.hasDirective[Azure] and sim.hasDirective[Crimson]):
         let turn = elapsed div sim.turnTicks()
-        sim.activeDirective[Azure] = sim.baselineDirective(Azure, azure, turn)
+        sim.activeDirective[Azure] = sim.policyView().baselineDirective(Azure, azure, turn)
         sim.activeDirective[Crimson] =
-          sim.baselineDirective(Crimson, crimson, turn)
+          sim.policyView().baselineDirective(Crimson, crimson, turn)
         for seat in Seat:
           sim.hasDirective[seat] = true
     let masks = sim.compileMasks(sim.activeDirective)

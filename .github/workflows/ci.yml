@@ -150,10 +150,22 @@ jobs:
           nim c -d:release --path:src -o:/tmp/cogball-export-posttrain tools/export_posttrain.nim
           python3 tools/test_export_posttrain.py /tmp/cogball-export-posttrain
 
-      - name: Run numeric training bridge matches
+      - name: Run numeric and language training bridge matches
         run: |
           nim c -d:release --path:src -o:/tmp/cogball-train-bridge tools/train_bridge.nim
           python3 tools/test_train_bridge.py /tmp/cogball-train-bridge
+
+      - name: Verify private native attempts and socket trust boundaries
+        run: |
+          nim c -d:release --path:src -o:/tmp/cogball-game src/cogball.nim
+          nim c -d:release --path:src -o:/tmp/cogball-player src/cogball_player.nim
+          nim c -d:release --path:src -o:/tmp/cogball-replay-check tools/check_training_replay.nim
+          nim c -d:release --path:src -o:/tmp/cogball-external-player tools/test_external_player.nim
+          python3 tools/test_native_trajectory.py /tmp/cogball-game /tmp/cogball-player /tmp/cogball-native-proof
+          for flow in /tmp/cogball-native-proof/*; do
+            /tmp/cogball-replay-check "$flow/replay.bitreplay" "$flow/trajectory.jsonl"
+          done
+          python3 tools/test_attempt_origins.py /tmp/cogball-game /tmp/cogball-external-player /tmp/cogball-replay-check
 
       # -----------------------------------------------------------------
       # Record the wasm smoke's fixture with the NATIVE build of THIS commit.

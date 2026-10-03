@@ -2,8 +2,8 @@
 ## nim r -d:release --path:src tools/export_posttrain.nim OUTPUT EPISODES [FIRST_SEED] [default|sprint]
 
 import std/[json, os, osproc, strutils]
-import bitworld/spriteprotocol
-import cogball/[baselines, control, decide, directives, roster, sim]
+import bitworld/[spriteprotocol, decision_trajectory]
+import cogball/[baselines, control, decide, directives, roster, sim, training_capture]
 
 when isMainModule:
   let args = commandLineParams()
@@ -20,6 +20,7 @@ when isMainModule:
   if dirExists(output) or fileExists(output):
     quit("output already exists: " & output, 1)
   createDir(output)
+  setFilePermissions(output, {fpUserRead, fpUserWrite, fpUserExec})
   let revision = execProcess("git rev-parse HEAD").strip()
   let manifest = parseFile("coworld_manifest_template.json")
   var variantConfig = newJNull()
@@ -29,8 +30,7 @@ when isMainModule:
   doAssert variantConfig.kind == JObject
 
   var
-    trainRows: seq[string]
-    validationRows: seq[string]
+    completeEpisodes: seq[string]
     runs = newJArray()
   for seed in firstSeed ..< firstSeed + episodes:
     var config = defaultGameConfig()
@@ -46,8 +46,10 @@ when isMainModule:
     for seat in Seat:
       engine.policies[seat] = SeatPolicy(kind: pkScripted,
         baseline: "formation", label: "formation", connected: true)
+    let capture = newMatchCapture("cogball-" & variant & "-" & $seed,
+      GameVersion, revision, seed)
     var
-      rows: seq[string]
+      decisions = 0
       previous = newSeq[InputState](RobotCount)
       lastGoals: array[Seat, int32]
     while game.phase != GameOver:
@@ -55,56 +57,36 @@ when isMainModule:
       if elapsed mod game.turnTicks() == 0 or
           not (game.hasDirective[Azure] and game.hasDirective[Crimson]):
         let turn = elapsed div game.turnTicks()
-        for seat in Seat:
-          let view = engine.seatViewJson(game, seat, turn)
-          let directive = game.baselineDirective(seat, "formation", turn)
-          let record = directiveJson(game, seat, directive)
-          let completion = %*{"note": record["note"], "robots": record["robots"]}
-          let parsed = game.parseDirective(seat, completion,
-            engine.previous[seat], engine.hasPrevious[seat], directive, turn)
-          doAssert parsed.usable
-          for slot in 0 ..< RobotsPerSeat:
-            doAssert parsed.directive.robots[slot].role == directive.robots[slot].role
-            doAssert parsed.directive.robots[slot].intent == directive.robots[slot].intent
-          rows.add($(%*{
-            "episode_id": "cogball-" & variant & "-" & $seed & "-" & $ord(seat),
-            "seed": "cogball-" & variant & "-" & $seed,
-            "decision_id": turn * SeatCount + ord(seat),
-            "prompt": [
-              {"role": "system", "content": SystemPrompt},
-              {"role": "user", "content": engine.userMessage(game, seat, turn)}],
-            "completion": [{"role": "assistant", "content": $completion}],
-            "game": "cogball",
-            "action_schema_revision": "cogball-directive-v1"
-          }))
-          doAssert engine.userMessage(game, seat, turn) == $view
         engine.turn(game, turn, 0)
+        capture.beginTurn(engine, game)
+        decisions += SeatCount
       let masks = game.compileMasks(game.activeDirective)
       var inputs = newSeq[InputState](RobotCount)
       for i in 0 ..< RobotCount:
         inputs[i] = decodeInputMask(masks[i])
       game.step(inputs, previous)
+      capture.recordTick(masks, game)
       previous = inputs
       for seat in Seat:
         if game.stats[seat].goals > lastGoals[seat]:
           lastGoals[seat] = game.stats[seat].goals
           engine.noteGoal(game.tickCount, int(game.lastGoalBy), seat)
-    doAssert game.endReason == reasonComplete and rows.len > 0
-    if seed mod 5 == 0: validationRows.add(rows)
-    else: trainRows.add(rows)
-    runs.add(%*{"seed": seed, "decisions": rows.len,
+    doAssert game.endReason == reasonComplete and decisions > 0
+    capture.finishMatch(game)
+    completeEpisodes.add(capture.trajectory.eventsJsonl())
+    runs.add(%*{"seed": seed, "decisions": decisions,
       "azure_goals": game.goals(Azure), "crimson_goals": game.goals(Crimson),
       "azure_score_permille": game.scorePermille(Azure)})
-  writeFile(output / "train.jsonl", trainRows.join("\n") & "\n")
-  writeFile(output / "validation.jsonl", validationRows.join("\n") & "\n")
-  writeFile(output / "manifest.json", pretty(%*{
+  writePrivate(output / "trajectories.jsonl", completeEpisodes.join(""))
+  writePrivate(output / "manifest.json", pretty(%*{
     "schema_version": 1,
     "game": "cogball",
     "variant": variant,
     "source_revision": revision,
     "teacher": "scripted-formation",
-    "train_examples": trainRows.len,
-    "validation_examples": validationRows.len,
+    "game_version": GameVersion,
+    "split_authority": "shared Coworld SDK and application importer by seed_family",
+    "inference_mode": "text_action",
     "runs": runs
   }) & "\n")
-  echo "train=", trainRows.len, " validation=", validationRows.len
+  echo "complete games=", episodes

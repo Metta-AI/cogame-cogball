@@ -8,7 +8,7 @@
 ## `swarm` is the second filler: deliberately weaker and different in shape.
 
 import
-  std/strutils,
+  std/[json, math, strutils],
   sim, directives
 
 ## The tuning constants are `{.intdefine.}` so the grid harness can sweep them
@@ -46,10 +46,35 @@ const
     ## half, instead of shielding the middle. Swept: shielding wins 63/96
     ## against 50/96.
 
-proc ballInOwnHalf*(sim: SimServer, seat: Seat): bool {.inline.} =
+type
+  PolicyPosition* = object
+    x*, y*: int32
+  PolicyView* = object
+    ball*: PolicyPosition
+    robots*: array[RobotCount, PolicyPosition]
+
+proc policyView*(sim: SimServer): PolicyView =
+  ## Precisely the two-decimal positions exposed to coaches, with no hidden state.
+  result.ball = PolicyPosition(x: CentreX + int32(round(round2(viewX(sim.ball.x)) * 1_000_000.0)),
+    y: CentreY + int32(round(round2(viewY(sim.ball.y)) * 1_000_000.0)))
+  for index in 0 ..< RobotCount:
+    result.robots[index] = PolicyPosition(
+      x: CentreX + int32(round(round2(viewX(sim.robots[index].x)) * 1_000_000.0)),
+      y: CentreY + int32(round(round2(viewY(sim.robots[index].y)) * 1_000_000.0)))
+
+proc policyView*(view: JsonNode, seat: Seat): PolicyView =
+  ## Training policies consume the exact authoritative private JSON view.
+  result.ball = PolicyPosition(x: CentreX + int32(round(view["ball"]["pos"][0].getFloat() * 1_000_000.0)),
+    y: CentreY + int32(round(view["ball"]["pos"][1].getFloat() * 1_000_000.0)))
+  for slot in 0 ..< RobotsPerSeat:
+    let position = view["your_robots"][slot]["pos"]
+    result.robots[firstRobotOf(seat) + slot] = PolicyPosition(
+      x: CentreX + int32(round(position[0].getFloat() * 1_000_000.0)), y: CentreY + int32(round(position[1].getFloat() * 1_000_000.0)))
+
+proc ballInOwnHalf*(sim: PolicyView, seat: Seat): bool {.inline.} =
   if attackDir(seat) > 0: sim.ball.x < CentreX else: sim.ball.x > CentreX
 
-proc deepestRobot*(sim: SimServer, seat: Seat): int =
+proc deepestRobot*(sim: PolicyView, seat: Seat): int =
   ## The robot nearest its own goal; ties by ascending robot index. Exported
   ## so tests/test_baselines.nim can assert the role labels against the same
   ## choice the baselines make, rather than re-deriving it.
@@ -66,7 +91,7 @@ proc deepestRobot*(sim: SimServer, seat: Seat): int =
       best = i
   best
 
-proc closestToBall(sim: SimServer, seat: Seat, skip: int): int =
+proc closestToBall(sim: PolicyView, seat: Seat, skip: int): int =
   var
     best = -1
     bestD = high(int64)
@@ -83,14 +108,14 @@ proc closestToBall(sim: SimServer, seat: Seat, skip: int): int =
       best = i
   best
 
-proc keeperTarget(sim: SimServer, seat: Seat): tuple[x, y: int32] =
+proc keeperTarget(sim: PolicyView, seat: Seat): tuple[x, y: int32] =
   let
     x = ownGoalX(seat) + int32(KeeperArc) * attackDir(seat)
     y = CentreY + clamp((sim.ball.y - CentreY) div 3,
       -int32(KeeperYSpan), int32(KeeperYSpan))
   (x, y)
 
-proc formationDirective*(sim: SimServer, seat: Seat, turn: int): Directive =
+proc formationDirective*(sim: PolicyView, seat: Seat, turn: int): Directive =
   ## The reference shape: one keeper on the arc, the nearest robot on the ball,
   ## the third either shielding the middle or running the channel.
   result = emptyDirective(seat)
@@ -162,7 +187,7 @@ proc formationDirective*(sim: SimServer, seat: Seat, turn: int): Directive =
         order.say = "running the channel"
     result.robots[slot] = order
 
-proc swarmDirective*(sim: SimServer, seat: Seat, turn: int): Directive =
+proc swarmDirective*(sim: PolicyView, seat: Seat, turn: int): Directive =
   ## Everyone chases. The deepest robot minds the goal only while the ball is
   ## in its own half. Loses to `formation`, which is the point: the ladder
   ## needs a spread.
@@ -198,7 +223,7 @@ proc swarmDirective*(sim: SimServer, seat: Seat, turn: int): Directive =
     result.robots[slot] = order
 
 proc baselineDirective*(
-  sim: SimServer,
+  sim: PolicyView,
   seat: Seat,
   name: string,
   turn: int
@@ -209,3 +234,6 @@ proc baselineDirective*(
     sim.swarmDirective(seat, turn)
   else:
     sim.formationDirective(seat, turn)
+
+proc ballInOwnHalf*(sim: SimServer, seat: Seat): bool {.inline.} =
+  sim.policyView().ballInOwnHalf(seat)

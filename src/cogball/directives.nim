@@ -155,6 +155,14 @@ proc directiveJson*(sim: SimServer, seat: Seat, directive: Directive): JsonNode 
     "robots": robots
   }
 
+proc actionJson*(sim: SimServer, seat: Seat, directive: Directive): JsonNode =
+  ## Exact installed control directive; spectator records round positions for display.
+  let record = sim.directiveJson(seat, directive)
+  result = %*{"note": record["note"], "robots": record["robots"]}
+  for slot in 0 ..< RobotsPerSeat:
+    result["robots"][slot]["target"] = %*[viewX(directive.robots[slot].targetX),
+      viewY(directive.robots[slot].targetY)]
+
 proc clipJsonStrings(node: JsonNode, budget: int): JsonNode =
   ## A copy of `node` with every STRING VALUE clipped to `budget` runes. Keys
   ## are untouched, so the shape a reader matches on survives.
@@ -315,8 +323,8 @@ proc parseDirective*(
       order.targetX = worldXOfView(vx)
       order.targetY = worldYOfView(vy)
     else:
-      order.targetX = sim.robots[index].x
-      order.targetY = sim.robots[index].y
+      order.targetX = worldXOfView(round2(viewX(sim.robots[index].x)))
+      order.targetY = worldYOfView(round2(viewY(sim.robots[index].y)))
     # pass_to: a TEAMMATE id that is not this robot; anything else is null.
     order.passTo = -1
     let passNode = entry.body{"pass_to"}

@@ -7,3 +7,11 @@ tmp
 build
 replay-viewer/dist
 *.tmp
+
+*.jsonl
+training-output
+private-trajectories
+corpus
+
+__pycache__/
+*.pyc

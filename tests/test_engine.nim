@@ -462,7 +462,7 @@ proc neverConnectingSeatIsReportedAndPlaysOn() =
           not (sim.hasDirective[Azure] and sim.hasDirective[Crimson]):
         let turn = elapsed div sim.turnTicks()
         for seat in Seat:
-          directives[seat] = sim.baselineDirective(seat, "formation", turn)
+          directives[seat] = sim.policyView().baselineDirective(seat, "formation", turn)
           sim.activeDirective[seat] = directives[seat]
           sim.hasDirective[seat] = true
     let masks = sim.compileMasks(sim.activeDirective)
@@ -510,7 +510,7 @@ proc physicsGuardTripsAndLeavesAPartialReplay() =
     writer.writeHash(uint32(sim.tickCount), sim.gameHash())
 
   for seat in Seat:
-    sim.activeDirective[seat] = sim.formationDirective(seat, 0)
+    sim.activeDirective[seat] = sim.policyView().formationDirective(seat, 0)
     sim.hasDirective[seat] = true
   for _ in 0 ..< 40:
     sim.stepRecording(writer)

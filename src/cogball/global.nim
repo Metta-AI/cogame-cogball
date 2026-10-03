@@ -179,7 +179,7 @@ proc applyGlobalViewerMessage*(state: var GlobalViewerState, message: string) =
         for ch in item.text:
           state.replayCommands.add(ch)
     of SpriteClientInputMessage, SpriteClientReadyMessage,
-        SpriteClientDebugSpriteMessage:
+        SpriteClientDebugSpriteMessage, SpriteClientSpritesOffMessage:
       discard
 
 proc applyPlayerViewerMessage*(

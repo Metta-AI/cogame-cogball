@@ -32,13 +32,13 @@
 ## partial replay instead of an unattributable episode.
 
 import
-  std/[json, locks, monotimes, nativesockets, os, strutils, tables, times],
+  std/[json, locks, monotimes, nativesockets, options, os, strutils, tables, times],
   bitworld/client as bitworldClient,
-  bitworld/runtime,
+  bitworld/[runtime, decision_trajectory],
   bitworld/spriteprotocol,
   mummy,
   sim, roster, control, directives, decide,
-  global, broadcast, replays, replay_runtime, events, wire_constants
+  global, broadcast, replays, replay_runtime, events, wire_constants, training_capture
 
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
@@ -57,7 +57,7 @@ type
     loadingReplayUri: string
     currentReplayUri: string
     chatMessages: Table[WebSocket, string]
-    actionMessages: Table[WebSocket, string]
+    actionMessages: Table[WebSocket, seq[string]]
     nextDecisionId: int
     playerIndices: Table[WebSocket, int]
     playerAddresses: Table[WebSocket, string]
@@ -104,7 +104,7 @@ var replayBytesForClients {.threadvar.}: string
 proc initAppState() =
   initLock(appState.lock)
   appState.chatMessages = initTable[WebSocket, string]()
-  appState.actionMessages = initTable[WebSocket, string]()
+  appState.actionMessages = initTable[WebSocket, seq[string]]()
   appState.nextDecisionId = 0
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerAddresses = initTable[WebSocket, string]()
@@ -315,7 +315,7 @@ proc websocketHandler(
       {.gcsafe.}:
         withLock appState.lock:
           if websocket in appState.playerViewers:
-            appState.actionMessages[websocket] = message.data
+            appState.actionMessages.mgetOrPut(websocket, @[]).add(message.data)
   of ErrorEvent, CloseEvent:
     var who = ""
     {.gcsafe.}:
@@ -481,34 +481,43 @@ proc playerBatch(
         if result[position].ok or result[position].error.len > 0:
           continue
         let socket = seatSockets[Seat(call.seat)]
-        var raw = ""
+        var messages: seq[string]
         {.gcsafe.}:
           withLock appState.lock:
             if appState.actionMessages.hasKey(socket):
-              raw = appState.actionMessages[socket]
+              messages = appState.actionMessages[socket]
               appState.actionMessages.del(socket)
-        if raw.len == 0:
+        for raw in messages:
+          if result[position].ok or result[position].error.len > 0: break
+          try:
+            let answer = parseJson(raw)
+            if answer{"id"}.getInt() != requestId: continue
+            let kind = answer{"type"}.getStr()
+            if kind notin ["action", "attempt_started"]: continue
+            if answer.hasKey("training_attempt") and answer["training_attempt"].kind != JNull:
+              var evidence = readAttemptEvidence(answer["training_attempt"])
+              if evidence.origin in {aoTeacher, aoHuman}: evidence.origin = aoUnknown
+              if result[position].evidence.isSome:
+                let started = result[position].evidence.get()
+                if kind == "attempt_started" or evidence.prompt != started.prompt or evidence.request != started.request:
+                  raise newException(CogballError, "attempt evidence changed its started request")
+              result[position].evidence = some(evidence)
+            if kind == "attempt_started": continue
+            if answer.hasKey("action") and answer["action"].kind == JObject:
+              result[position].ok = true
+              result[position].text = $answer["action"]
+            else:
+              result[position].error = answer{"error"}.getStr("player fallback")
+              let cause = answer{"cause"}.getStr()
+              result[position].cause =
+                if cause in ["no_credentials", "timeout", "parse_error"]:
+                  cause
+                else:
+                  "transport_error"
+          except CatchableError:
+            result[position].error = "invalid player response"
+        if not result[position].ok and result[position].error.len == 0:
           pending = true
-          continue
-        try:
-          let answer = parseJson(raw)
-          if answer{"type"}.getStr() != "action" or
-              answer{"id"}.getInt() != requestId:
-            pending = true
-            continue
-          if answer.hasKey("action") and answer["action"].kind == JObject:
-            result[position].ok = true
-            result[position].text = $answer["action"]
-          else:
-            result[position].error = answer{"error"}.getStr("player fallback")
-            let cause = answer{"cause"}.getStr()
-            result[position].cause =
-              if cause in ["no_credentials", "timeout", "parse_error"]:
-                cause
-              else:
-                "transport_error"
-        except CatchableError:
-          result[position].error = "invalid player response"
       if not pending:
         break
       sleep(10)
@@ -592,6 +601,12 @@ proc runServerLoop*(
     engine.policies[seat] = SeatPolicy(
       kind: pkScripted, baseline: "formation", label: "formation")
 
+  let trajectoryUri = getEnv(CogameSaveTrajectoryUriEnv)
+  let capture = if trajectoryUri.len > 0 and not replayLoaded:
+    some(newMatchCapture(getEnv("COWORLD_EPISODE_ID"),
+      getEnv("COWORLD_GAME_VERSION"), getEnv("COWORLD_SOURCE_REVISION"), config.seed))
+    else: none(MatchCapture)
+
   let httpServer = newServer(httpHandler, websocketHandler, workerThreads = 4)
   var
     serverThread: Thread[ServerThreadArgs]
@@ -628,6 +643,9 @@ proc runServerLoop*(
     ## `fault/host_error` a real ending rather than a declared one: the note
     ## promises best-effort artifacts before re-raising.
     replayWriter.closeReplayWriter()
+    if capture.isSome:
+      capture.get().finishMatch(sim)
+      capture.get().trajectory.writeEventsToUri(trajectoryUri)
     if saveReplayPath.len > 0 and fileExists(saveReplayPath):
       echo "Replay written: ", saveReplayPath,
         " (", getFileSize(saveReplayPath), " bytes)"
@@ -806,6 +824,7 @@ proc runServerLoop*(
                   seatConnected[seat] = true
               engine.batch = playerBatch(seatSockets, seatConnected)
               engine.turn(sim, elapsedTicks div sim.turnTicks(), seconds)
+              if capture.isSome: capture.get().beginTurn(engine, sim)
               for record in engine.records:
                 recordAndWrite(record)
           # EDIT 1: the input source is the control layer, not the socket.
@@ -815,6 +834,7 @@ proc runServerLoop*(
           for i in 0 ..< RobotCount:
             inputs[i] = decodeInputMask(masks[i])
           sim.step(inputs, prevInputs)
+          if capture.isSome: capture.get().recordTick(masks, sim)
           prevInputs = inputs
           replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
           if sim.collectEvents:

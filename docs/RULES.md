@@ -70,7 +70,7 @@ same `uint8` the replay records and the viewer replays.
 | `ButtonRight` | torque clockwise |
 | `ButtonSelect` | brake (grip ×3 this tick; thrust is forced to 0) |
 | `ButtonA` | kick |
-| `ButtonB`, `ButtonC` | reserved, must be 0 |
+| `ButtonB`, bit 7 | reserved, must be 0 |
 
 Up+Down together is no thrust; Left+Right together is no torque.
 

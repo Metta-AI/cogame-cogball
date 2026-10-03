@@ -17,6 +17,8 @@ The game container reads and writes the standard `COGAME_*` URIs:
 | `COGAME_SAVE_REPLAY_URI` | the `COWLDBAL` replay bytes |
 | `COGAME_LOAD_REPLAY_URI` | a replay to serve instead of playing a match |
 | `COGAME_PLAYER_FAILURE_URI` | `{"failed_policy_index": N, "message": "…"}` |
+| `COGAME_SAVE_TRAJECTORY_URI` | private decision attempts and complete outcome (scoped file/PUT URI) |
+| `COWORLD_EPISODE_ID`, `COWORLD_GAME_VERSION`, `COWORLD_SOURCE_REVISION` | required immutable identity when private capture is enabled |
 | `COGAME_EVENTS_URI` | the tier-2 JSON-lines analysis stream (`file://` only) |
 | `COGAME_HOST` / `COGAME_PORT` | the bind address (default `0.0.0.0:8080`) |
 | player model credentials | supplied only to the selected player policy container |
@@ -65,7 +67,8 @@ then the raw payload) carrying:
 
 * `prompt` and `external` policies receive decision requests over the same player
   socket. The player runs inference and returns a directive. The game receives
-  no prompt, model credential, or provider response.
+  no model credential. Private `training_attempt` metadata carries the exact
+  inference prompt, request, response, and actual native provenance.
 * `scripted` selects a built-in baseline; an unknown or absent value is
   `formation`.
 * `policy` is a free label, capped at **48 runes**, recorded in the replay.
@@ -98,6 +101,12 @@ The game checks the request ID, parses and repairs the directive with the
 production parser, and falls back to `formation` after one retry. A player can
 report `{"type":"action","id":1,"cause":"no_credentials",
 "error":"no_credentials"}`. Results, replay and actuator masks stay game-owned.
+
+`training_attempt` is an optional private Bitworld evidence object; explicit null
+means no supplied evidence. The engine owns inference mode, acceptance, parsed
+action, and execution. Player teacher/human assertions become unknown. Model
+responses must independently parse to the same canonical submitted action.
+Metadata is never included in public replay records.
 
 ### Frames
 

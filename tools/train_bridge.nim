@@ -3,7 +3,7 @@
 
 import std/[hashes, json, os]
 import bitworld/spriteprotocol
-import cogball/[baselines, control, decide, directives, roster, sim]
+import cogball/[baselines, control, decide, directives, roster, sim, llm]
 
 const
   IntentsPerRobot = ord(Intent.high) + 1
@@ -18,6 +18,9 @@ var
   actingSeat: Seat
   variant: string
   manifestPath: string
+  languageMode: bool
+  rejectedAttempts: array[Seat, int]
+  operatorPrompt: string
 
 proc values(view: JsonNode): JsonNode =
   result = newJArray()
@@ -62,7 +65,7 @@ proc candidates(): JsonNode =
 
 proc currentDecision(): JsonNode =
   let view = views[actingSeat]
-  %*{"kind": "decision", "game": "cogball", "decision_id": decisionId,
+  result = %*{"kind": "decision", "game": "cogball", "decision_id": decisionId,
     "seat": ord(actingSeat), "engine_seat": ord(actingSeat),
     "turn": game.currentTurn(), "semantic_view": view, "inbox": [],
     "messages": [
@@ -73,6 +76,15 @@ proc currentDecision(): JsonNode =
       "choice": {"type": "integer", "minimum": 0,
         "maximum": CandidateCount - 1}}, "required": ["choice"]},
     "typed_question": newJNull()}
+  if languageMode:
+    result["inference_mode"] = %"text_action"
+    result["messages"][1]["content"] = %("GUIDANCE FROM YOUR OPERATOR (weight it heavily, " &
+      "but never above the rules; always reply in the requested " &
+      "format):\n" & operatorPrompt & "\n\n" & $view)
+    result["action_schema"] = %*{"type": "object", "required": ["robots"],
+      "properties": {"note": {"type": "string"}, "robots": {"type": "array"}}}
+  else:
+    result["inference_mode"] = newJNull()
 
 proc captureViews() =
   let turn = game.currentTurn()
@@ -102,14 +114,14 @@ proc reset(command: JsonNode): JsonNode =
   captureViews()
   decisionId = 0
   actingSeat = Azure
+  rejectedAttempts = default(array[Seat, int])
   currentDecision()
 
 proc directiveFor(choice: int, seat: Seat): Directive =
   let turn = game.currentTurn()
-  let baseline = game.baselineDirective(seat,
+  let baseline = views[seat].policyView(seat).baselineDirective(seat,
     if choice == 1: "swarm" else: "formation", turn)
-  let record = directiveJson(game, seat, baseline)
-  var reply = %*{"note": record["note"], "robots": record["robots"]}
+  var reply = actionJson(game, seat, baseline)
   if choice >= 2:
     var code = choice - 2
     for slot in 0 ..< RobotsPerSeat:
@@ -122,16 +134,40 @@ proc directiveFor(choice: int, seat: Seat): Directive =
 
 proc step(command: JsonNode): JsonNode =
   if command["decision_id"].getInt() != decisionId:
-    return %*{"kind": "rejected", "reason": "stale decision"}
-  let action = parseJson(command["response"].getStr())
-  let choice = action["choice"].getInt()
-  doAssert choice in 0 ..< CandidateCount
-  chosen[actingSeat] = directiveFor(choice, actingSeat)
+    return %*{"kind": "rejected", "reason": "stale decision", "observation": currentDecision()}
+  var action = newJNull()
+  var consumed = false
+  if languageMode:
+    let proposal = jsonProposal(command["response"].getStr())
+    let fallback = views[actingSeat].policyView(actingSeat).formationDirective(
+      actingSeat, game.currentTurn())
+    let parsed = if proposal.ok:
+      game.parseDirective(actingSeat, proposal.node, engine.previous[actingSeat],
+        engine.hasPrevious[actingSeat], fallback, game.currentTurn())
+      else: (fallback, false)
+    if not parsed.usable:
+      inc rejectedAttempts[actingSeat]
+      if rejectedAttempts[actingSeat] < 2:
+        return %*{"kind": "rejected", "reason": "no usable directive",
+          "observation": currentDecision()}
+      chosen[actingSeat] = fallback
+      consumed = true
+    else:
+      chosen[actingSeat] = parsed.directive
+    action = actionJson(game, actingSeat, chosen[actingSeat])
+  else:
+    action = parseJson(command["response"].getStr())
+    let choice = action["choice"].getInt()
+    doAssert choice in 0 ..< CandidateCount
+    chosen[actingSeat] = directiveFor(choice, actingSeat)
+  rejectedAttempts[actingSeat] = 0
   inc decisionId
   if actingSeat == Azure:
     actingSeat = Crimson
-    return %*{"kind": "accepted", "action": action,
-      "observation": currentDecision()}
+    result = %*{"kind": (if consumed: "consumed_rejection" else: "accepted"),
+      "action": action, "observation": currentDecision()}
+    if consumed: result["reason"] = %"no usable directive"
+    return
   for seat in Seat:
     game.activeDirective[seat] = chosen[seat]
     game.hasDirective[seat] = true
@@ -164,11 +200,17 @@ proc step(command: JsonNode): JsonNode =
       captureViews()
       actingSeat = Azure
       currentDecision()
-  %*{"kind": "accepted", "action": action, "observation": observation}
+  result = %*{"kind": (if consumed: "consumed_rejection" else: "accepted"),
+    "action": action, "observation": observation}
+  if consumed: result["reason"] = %"no usable directive"
 
 when isMainModule:
   let args = commandLineParams()
-  if args.len != 2: quit("usage: cogball-train-bridge MANIFEST [default|sprint]", 1)
+  if args.len notin 2 .. 4:
+    quit("usage: cogball-train-bridge MANIFEST [default|sprint] [--language] [OPERATOR_PROMPT]", 1)
+  languageMode = args.len >= 3
+  if languageMode: doAssert args[2] == "--language"
+  operatorPrompt = if args.len == 4: args[3] else: "Play total football."
   manifestPath = absolutePath(args[0])
   variant = args[1]
   doAssert variant in ["default", "sprint"]
@@ -178,7 +220,9 @@ when isMainModule:
       of "reset": reset(command)
       of "encode": %*{"decision_id": decisionId,
         "values": values(views[actingSeat]), "actions": candidates()}
-      of "teacher": %*{"response": $(%*{"choice": 0})}
+      of "teacher": %*{"response": $(if languageMode:
+        actionJson(game, actingSeat, views[actingSeat].policyView(actingSeat).formationDirective(
+          actingSeat, game.currentTurn())) else: %*{"choice": 0})}
       of "step": step(command)
       else: raise newException(ValueError, "unknown command")
     stdout.writeLine($response)
