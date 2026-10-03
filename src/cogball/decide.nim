@@ -351,8 +351,8 @@ proc turn*(
         evidence.prompt = %*[{"role": "system", "content": SystemPrompt},
           {"role": "user", "content": $engine.decisions[seat].observation}]
         if reply.ok: evidence.response = %reply.text
-      evidence.latencyMs = if evidence.latencyMs.isSome: evidence.latencyMs
-        else: some(float(latency))
+      if reply.evidence.isNone:
+        evidence.latencyMs = some(float(latency))
       if not reply.ok:
         # curl words its deadline several ways ("Timeout was reached",
         # "Operation timed out after ...", "Connection timed out"), so match on
@@ -399,6 +399,8 @@ proc turn*(
           detail = failure.msg
       if cause.len > 0:
         evidence.accepted = false
+        if evidence.origin == aoModel and evidence.response.kind == JNull:
+          detail = "incomplete_native_attempt: " & cause & " before HTTP response"
         evidence.rejectionReason = some(detail)
       engine.decisions[seat].attempts.add(evidence)
       if cause.len > 0:

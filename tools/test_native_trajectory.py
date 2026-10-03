@@ -127,6 +127,9 @@ for flow in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                         assert attempt["request"] in timeout_requests
                         assert attempt["prompt"][1]["content"] == attempt["request"]["messages"][0]["content"]
                         assert attempt["platform_call_id"] is None
+                        assert attempt["response"] is None and attempt["raw_response"] is None
+                        assert attempt["latency_ms"] is None
+                        assert attempt["rejection_reason"].startswith("incomplete_native_attempt: timeout")
                     if attempt["platform_call_id"] is None: continue
                     call_id = attempt["platform_call_id"]
                     assert call_id not in seen; seen.add(call_id)
