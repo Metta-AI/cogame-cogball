@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GAME, PLAYER = (str(Path(arg).resolve()) for arg in sys.argv[1:3])
-for flow in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "provider-error", "timeout"):
+for flow in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "provider-error", "malformed-200", "timeout"):
     calls = {}
     timeout_requests = []
     class Provider(http.server.BaseHTTPRequestHandler):
@@ -49,8 +49,10 @@ for flow in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                     "stop_reason": "eos", "response": text}
             if flow == "provider-error" and slot == 0:
                 body = {"error": {"message": "private-provider-error"}}
+            if flow == "malformed-200" and slot == 0:
+                body = "private-malformed-provider"
             calls[call_id] = (request, body)
-            encoded = json.dumps(body).encode()
+            encoded = body.encode() if isinstance(body, str) else json.dumps(body).encode()
             self.send_response(429 if flow == "provider-error" and slot == 0 else 200)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(encoded)))
@@ -134,7 +136,11 @@ for flow in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                     call_id = attempt["platform_call_id"]
                     assert call_id not in seen; seen.add(call_id)
                     request, body = calls[call_id]
-                    assert attempt["request"] == request and json.loads(attempt["raw_response"]) == body
+                    assert attempt["request"] == request
+                    assert (attempt["raw_response"] if isinstance(body, str) else json.loads(attempt["raw_response"])) == body
+                    if flow in {"provider-error", "malformed-200"} and slot == 0:
+                        assert attempt["response"] is None and attempt["latency_ms"] is not None
+                        assert not attempt["rejection_reason"].startswith("incomplete_native_attempt:")
                     assert attempt["prompt"][0]["content"] == request["system"]
                     assert attempt["prompt"][1]["content"] == request["messages"][0]["content"]
                     if "model" in body:
@@ -148,9 +154,9 @@ for flow in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                 else: assert decision["selected_attempt_id"] is None
             assert seen == set(calls)
             public = (output / "replay.bitreplay").read_bytes().decode("latin1") + "".join((output / p).read_text() for p in ["game.log", *(f"player{i}.log" for i in range(2))])
-            for secret in ("private-guidance-fixture", "private-invalid-response", "private-provider-error"):
+            for secret in ("private-guidance-fixture", "private-invalid-response", "private-provider-error", "private-malformed-provider"):
                 assert secret not in public
-            if flow in {"invalid", "provider-error", "timeout"}:
+            if flow in {"invalid", "provider-error", "malformed-200", "timeout"}:
                 assert any(d["action_status"] == "fallback" and len(d["attempts"]) == 2 for d in decisions)
             archive = output / "fixture_calls.json"
             archive.write_text(json.dumps({"cohort": "local HTTP fixture, not real platform archive", "synthetic_model_identities": True, "calls": calls}))
