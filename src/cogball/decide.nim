@@ -399,7 +399,7 @@ proc turn*(
           detail = failure.msg
       if cause.len > 0:
         evidence.accepted = false
-        if evidence.origin == aoModel and evidence.response.kind == JNull:
+        if evidence.origin == aoModel and evidence.response.kind == JNull and evidence.rawResponse.kind == JNull:
           detail = "incomplete_native_attempt: " & cause & " before HTTP response"
         evidence.rejectionReason = some(detail)
       engine.decisions[seat].attempts.add(evidence)
