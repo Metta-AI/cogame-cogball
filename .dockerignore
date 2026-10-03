@@ -12,3 +12,6 @@ replay-viewer/dist
 training-output
 private-trajectories
 corpus
+
+__pycache__/
+*.pyc

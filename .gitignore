@@ -36,3 +36,6 @@ replay-viewer/dist/
 # Local recordings and scratch.
 *.log
 .scan/
+
+__pycache__/
+*.pyc
