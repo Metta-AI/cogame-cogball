@@ -14,8 +14,9 @@
 ## call's in-flight window and assert the two windows intersect.
 
 import
-  std/[json, monotimes, strutils, times],
-  sim, directives, baselines
+  std/[json, monotimes, options, strutils, times],
+  bitworld/decision_trajectory,
+  sim, directives, baselines, llm
 
 const SystemPrompt* = """You are the coach of a three-robot soccer team in a continuous 2D physics world.
 Every 5 seconds of match time you issue ONE directive for all three of your robots.
@@ -53,6 +54,7 @@ type
     text*: string
     error*: string
     cause*: string
+    evidence*: Option[DecisionAttempt]
 
   BatchFn* = proc (
     calls: seq[BatchCall],
@@ -65,6 +67,13 @@ type
     label*: string
     connected*: bool
 
+  TurnDecision* = object
+    observation*: JsonNode
+    attempts*: seq[DecisionAttempt]
+    selectedAttemptId*: Option[string]
+    executedAction*: JsonNode
+    status*: ActionStatus
+
   TurnEngine* = ref object
     batch*: BatchFn
     policies*: array[Seat, SeatPolicy]
@@ -74,6 +83,7 @@ type
     lastGoals*: seq[JsonNode]
     llmOff*: bool
     guardTurn*: int
+    decisions*: array[Seat, TurnDecision]
     records*: seq[string]      ## the replay chat records this turn produced.
 
 # --------------------------------------------------------------------------
@@ -225,7 +235,7 @@ proc fallbackFor(
   turn: int
 ): Directive =
   ## The `formation` directive is the fallback for every failure mode.
-  result = sim.formationDirective(seat, turn)
+  result = sim.policyView().formationDirective(seat, turn)
   result.source = dsFallback
 
 proc turn*(
@@ -238,6 +248,10 @@ proc turn*(
   ## parallel retry, all inside a monotonic `turnBudgetMs` bound, then installs
   ## both seats' directives and writes the records.
   engine.records.setLen(0)
+  for seat in Seat:
+    engine.decisions[seat] = TurnDecision(
+      observation: engine.seatViewJson(sim, seat, turnIndex),
+      status: asFallback, executedAction: newJNull())
   let
     deadline = getMonoTime() + initDuration(
       milliseconds = max(1, sim.config.turnBudgetMs))
@@ -264,8 +278,25 @@ proc turn*(
   for seat in Seat:
     let policy = engine.policies[seat]
     if policy.kind == pkScripted:
-      resolved[seat] = sim.baselineDirective(seat, policy.baseline, turnIndex)
+      resolved[seat] = engine.seatViewJson(sim, seat, turnIndex).policyView(seat).baselineDirective(
+        seat, policy.baseline, turnIndex)
       settled[seat] = true
+      var teacher = newDecisionAttempt($turnIndex & "-" & $ord(seat) & "-teacher",
+        "scripted-" & policy.baseline, if policy.connected: aoTeacher else: aoFallback)
+      teacher.prompt = %*[{"role": "system", "content": SystemPrompt},
+        {"role": "user", "content": $engine.decisions[seat].observation}]
+      teacher.parsedAction = actionJson(sim, seat, resolved[seat])
+      teacher.response = %($teacher.parsedAction)
+      teacher.rawResponse = %($teacher.parsedAction)
+      teacher.model = some("scripted-" & policy.baseline)
+      teacher.request = %*{"teacher": "scripted-" & policy.baseline,
+        "observation": engine.decisions[seat].observation}
+      teacher.decoder = %*{"method": "deterministic"}
+      teacher.accepted = policy.connected
+      engine.decisions[seat].attempts = @[teacher]
+      if policy.connected:
+        engine.decisions[seat].selectedAttemptId = some(teacher.attemptId)
+        engine.decisions[seat].status = asAccepted
     elif engine.llmOff or engine.batch.isNil:
       resolved[seat] = engine.fallbackFor(sim, seat, turnIndex)
       settled[seat] = true
@@ -312,6 +343,16 @@ proc turn*(
       let seat = Seat(reply.seat and 1)
       var cause = ""
       var detail = reply.error
+      var evidence = if reply.evidence.isSome: reply.evidence.get()
+        else: newDecisionAttempt($turnIndex & "-" & $ord(seat) & "-" & $attempt,
+          engine.policies[seat].label, if reply.ok: aoUnknown else: aoFallback)
+      evidence.attemptId = $turnIndex & "-" & $ord(seat) & "-" & $attempt
+      if reply.evidence.isNone:
+        evidence.prompt = %*[{"role": "system", "content": SystemPrompt},
+          {"role": "user", "content": $engine.decisions[seat].observation}]
+        if reply.ok: evidence.response = %reply.text
+      evidence.latencyMs = if evidence.latencyMs.isSome: evidence.latencyMs
+        else: some(float(latency))
       if not reply.ok:
         # curl words its deadline several ways ("Timeout was reached",
         # "Operation timed out after ...", "Connection timed out"), so match on
@@ -328,8 +369,25 @@ proc turn*(
           let payload = parseJson(reply.text)
           let parsed = parseDirective(sim, seat, payload,
             engine.previous[seat], engine.hasPrevious[seat],
-            sim.formationDirective(seat, turnIndex), turnIndex)
+            sim.policyView().formationDirective(seat, turnIndex), turnIndex)
           if parsed.usable:
+            let wireAction = actionJson(sim, seat, parsed.directive)
+            if evidence.origin == aoModel:
+              evidence.parsedAction = newJNull()
+              let generated = extractJsonObject(evidence.response.getStr())
+              let independentlyParsed = parseDirective(sim, seat, generated,
+                engine.previous[seat], engine.hasPrevious[seat],
+                sim.policyView().formationDirective(seat, turnIndex), turnIndex)
+              let proposed = if independentlyParsed.usable:
+                actionJson(sim, seat, independentlyParsed.directive) else: newJNull()
+              evidence.parsedAction = proposed
+              if not independentlyParsed.usable or proposed != wireAction:
+                raise newException(CogballError, "model response differs from submitted directive")
+            else:
+              evidence.parsedAction = wireAction
+            evidence.accepted = true
+            engine.decisions[seat].selectedAttemptId = some(evidence.attemptId)
+            engine.decisions[seat].status = asAccepted
             resolved[seat] = parsed.directive
             resolved[seat].latencyMs = latency
             settled[seat] = true
@@ -340,10 +398,14 @@ proc turn*(
           cause = "parse_error"
           detail = failure.msg
       if cause.len > 0:
+        evidence.accepted = false
+        evidence.rejectionReason = some(detail)
+      engine.decisions[seat].attempts.add(evidence)
+      if cause.len > 0:
         engine.addRecord(%*{
           "k": "fallback", "turn": turnIndex, "seat": ord(seat),
           "attempt": attempt, "cause": cause,
-          "detail": clipRunes(detail, MaxDetailRunes)
+          "detail": cause
         })
         for call in calls:
           if call.seat == reply.seat:
@@ -361,6 +423,7 @@ proc turn*(
     if not settled[seat]:
       resolved[seat] = engine.fallbackFor(sim, seat, turnIndex)
     resolved[seat].turn = int32(turnIndex)
+    engine.decisions[seat].executedAction = actionJson(sim, seat, resolved[seat])
     sim.activeDirective[seat] = resolved[seat]
     sim.hasDirective[seat] = true
     engine.previous[seat] = resolved[seat]

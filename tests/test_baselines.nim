@@ -1,7 +1,7 @@
 ## Bounded-orders / legality assertion on the scripted baselines, plus the
 ## round-1 corner regression, pinned.
 
-import std/[os, random, strutils, unicode]
+import std/[json, os, random, strutils, unicode]
 import lib/helpers
 
 proc validate(sim: SimServer, seat: Seat, directive: Directive, what: string) =
@@ -34,6 +34,37 @@ proc validate(sim: SimServer, seat: Seat, directive: Directive, what: string) =
       what & ": say is " & $order.say.runeLen & " runes"
     doAssert isValidUtf8(order.say), what & ": say is not valid UTF-8"
 
+proc observablePolicyOnly() =
+  let engine = newTurnEngine(nil)
+  var sim = playing(testConfig())
+  sim.robots[0].x = 1_500_000
+  for seat in Seat:
+    let view = engine.seatViewJson(sim, seat, 0)
+    let fromView = view.policyView(seat)
+    if seat == Azure: doAssert fromView.robots[0].x < ownGoalX(seat)
+    for baseline in ["formation", "swarm"]:
+      let expected = fromView.baselineDirective(seat, baseline, 0)
+      let production = sim.policyView().baselineDirective(seat, baseline, 0)
+      doAssert directiveJson(sim, seat, expected) == directiveJson(sim, seat, production)
+      for slot in 0 ..< RobotsPerSeat:
+        let index = firstRobotOf(seat) + slot
+        sim.robots[index].x += 1
+        sim.robots[index].y += 1
+      sim.ball.x += 1
+      sim.ball.y += 1
+      sim.config.seed += 1
+      sim.activeDirective[other(seat)].note = "privileged opponent notebook"
+      doAssert engine.seatViewJson(sim, seat, 0) == view
+      let changed = sim.policyView().baselineDirective(seat, baseline, 0)
+      doAssert directiveJson(sim, seat, changed) == directiveJson(sim, seat, expected)
+      let action = actionJson(sim, seat, expected)
+      let parsed = sim.parseDirective(seat, action, emptyDirective(seat), false, expected, 0)
+      doAssert parsed.usable
+      for slot in 0 ..< RobotsPerSeat:
+        doAssert parsed.directive.robots[slot].targetX == expected.robots[slot].targetX
+        doAssert parsed.directive.robots[slot].targetY == expected.robots[slot].targetY
+  report "private-view teacher is invariant to hidden precision, seed and opponent directive"
+
 proc boundedOrders() =
   ## 500 pseudo-random world states x both baselines: every emitted directive
   ## validates, and every compiled mask has only legal bits.
@@ -45,7 +76,7 @@ proc boundedOrders() =
     sim.pseudoWorld(rng)
     for name in ["formation", "swarm"]:
       for seat in Seat:
-        let directive = sim.baselineDirective(seat, name, round)
+        let directive = sim.policyView().baselineDirective(seat, name, round)
         sim.validate(seat, directive,
           name & " seat " & seatAlias(seat) & " round " & $round)
         sim.activeDirective[seat] = directive
@@ -58,8 +89,8 @@ proc boundedOrders() =
 
 proc unknownBaselineIsFormation() =
   var sim = playing(testConfig())
-  let fallback = sim.baselineDirective(Azure, "not-a-baseline", 0)
-  let formation = sim.formationDirective(Azure, 0)
+  let fallback = sim.policyView().baselineDirective(Azure, "not-a-baseline", 0)
+  let formation = sim.policyView().formationDirective(Azure, 0)
   doAssert fallback.note == formation.note
   for slot in 0 ..< RobotsPerSeat:
     doAssert fallback.robots[slot].intent == formation.robots[slot].intent
@@ -73,7 +104,7 @@ proc exactlyOneKeeper() =
   for _ in 0 ..< 200:
     sim.pseudoWorld(rng)
     for seat in Seat:
-      let directive = sim.formationDirective(seat, 0)
+      let directive = sim.policyView().formationDirective(seat, 0)
       var keepers = 0
       var keeperSlot = -1
       for slot in 0 ..< RobotsPerSeat:
@@ -105,8 +136,8 @@ proc swarmRolesAreFixed() =
     sim.pseudoWorld(rng)
     for seat in Seat:
       let
-        directive = sim.swarmDirective(seat, 0)
-        deepest = sim.deepestRobot(seat) - firstRobotOf(seat)
+        directive = sim.policyView().swarmDirective(seat, 0)
+        deepest = sim.policyView().deepestRobot(seat) - firstRobotOf(seat)
       sawBothHalves[ord(sim.ballInOwnHalf(seat))] = true
       var backs = 0
       for slot in 0 ..< RobotsPerSeat:
@@ -180,6 +211,7 @@ proc theGridHarnessIsCommitted() =
 
 when isMainModule:
   echo "test_baselines"
+  observablePolicyOnly()
   boundedOrders()
   unknownBaselineIsFormation()
   exactlyOneKeeper()

@@ -32,13 +32,13 @@
 ## partial replay instead of an unattributable episode.
 
 import
-  std/[json, locks, monotimes, nativesockets, os, strutils, tables, times],
+  std/[json, locks, monotimes, nativesockets, options, os, strutils, tables, times],
   bitworld/client as bitworldClient,
-  bitworld/runtime,
+  bitworld/[runtime, decision_trajectory],
   bitworld/spriteprotocol,
   mummy,
   sim, roster, control, directives, decide,
-  global, broadcast, replays, replay_runtime, events, wire_constants
+  global, broadcast, replays, replay_runtime, events, wire_constants, training_capture
 
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
@@ -496,6 +496,10 @@ proc playerBatch(
               answer{"id"}.getInt() != requestId:
             pending = true
             continue
+          if answer.hasKey("training_attempt") and answer["training_attempt"].kind != JNull:
+            var evidence = readAttemptEvidence(answer["training_attempt"])
+            if evidence.origin in {aoTeacher, aoHuman}: evidence.origin = aoUnknown
+            result[position].evidence = some(evidence)
           if answer.hasKey("action") and answer["action"].kind == JObject:
             result[position].ok = true
             result[position].text = $answer["action"]
@@ -592,6 +596,12 @@ proc runServerLoop*(
     engine.policies[seat] = SeatPolicy(
       kind: pkScripted, baseline: "formation", label: "formation")
 
+  let trajectoryUri = getEnv(CogameSaveTrajectoryUriEnv)
+  let capture = if trajectoryUri.len > 0 and not replayLoaded:
+    some(newMatchCapture(getEnv("COWORLD_EPISODE_ID"),
+      getEnv("COWORLD_GAME_VERSION"), getEnv("COWORLD_SOURCE_REVISION"), config.seed))
+    else: none(MatchCapture)
+
   let httpServer = newServer(httpHandler, websocketHandler, workerThreads = 4)
   var
     serverThread: Thread[ServerThreadArgs]
@@ -628,6 +638,9 @@ proc runServerLoop*(
     ## `fault/host_error` a real ending rather than a declared one: the note
     ## promises best-effort artifacts before re-raising.
     replayWriter.closeReplayWriter()
+    if capture.isSome:
+      capture.get().finishMatch(sim)
+      capture.get().trajectory.writeEventsToUri(trajectoryUri)
     if saveReplayPath.len > 0 and fileExists(saveReplayPath):
       echo "Replay written: ", saveReplayPath,
         " (", getFileSize(saveReplayPath), " bytes)"
@@ -806,6 +819,7 @@ proc runServerLoop*(
                   seatConnected[seat] = true
               engine.batch = playerBatch(seatSockets, seatConnected)
               engine.turn(sim, elapsedTicks div sim.turnTicks(), seconds)
+              if capture.isSome: capture.get().beginTurn(engine, sim)
               for record in engine.records:
                 recordAndWrite(record)
           # EDIT 1: the input source is the control layer, not the socket.
@@ -815,6 +829,7 @@ proc runServerLoop*(
           for i in 0 ..< RobotCount:
             inputs[i] = decodeInputMask(masks[i])
           sim.step(inputs, prevInputs)
+          if capture.isSome: capture.get().recordTick(masks, sim)
           prevInputs = inputs
           replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
           if sim.collectEvents:

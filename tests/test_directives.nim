@@ -15,8 +15,8 @@ proc parseOf(
   hasPrevious = false
 ): tuple[directive: Directive, usable: bool] =
   let payload = extractJsonObject(text)
-  parseDirective(sim, seat, payload, sim.formationDirective(seat, 0),
-    hasPrevious, sim.formationDirective(seat, 0), 1)
+  parseDirective(sim, seat, payload, sim.policyView().formationDirective(seat, 0),
+    hasPrevious, sim.policyView().formationDirective(seat, 0), 1)
 
 proc prosePrefixed() =
   var sim = playing(testConfig())
@@ -82,9 +82,9 @@ proc badTargets() =
    {"id":"AZ-3","role":"back","intent":"hold","target":["nope","nope"]}]}"""
   let got = sim.parseOf(Azure, text)
   doAssert got.usable
-  doAssert got.directive.robots[0].targetX == sim.robots[0].x,
-    "a missing target did not fall back to the robot's position"
-  doAssert got.directive.robots[0].targetY == sim.robots[0].y
+  doAssert got.directive.robots[0].targetX == worldXOfView(round2(viewX(sim.robots[0].x))),
+    "a missing target did not fall back to the observed robot position"
+  doAssert got.directive.robots[0].targetY == worldYOfView(round2(viewY(sim.robots[0].y)))
   doAssert got.directive.robots[1].targetX == worldXOfView(20.0),
     "an out-of-pitch target was not clamped"
   doAssert got.directive.robots[1].targetY == worldYOfView(-12.5)
@@ -209,7 +209,7 @@ proc capRecordStaysParseable() =
   ## phase 60 would under-count the LLM directives it exists to verify.
   var sim = playing(testConfig())
   for quoteSaturated in ["\"", "\\"]:
-    var directive = sim.formationDirective(Azure, 39)
+    var directive = sim.policyView().formationDirective(Azure, 39)
     directive.source = dsLlm
     directive.latencyMs = 12345
     directive.note = clipRunes(repeat(quoteSaturated, MaxNoteRunes),

@@ -16,6 +16,7 @@
 import
   std/[json, monotimes, net, options, os, strutils, times],
   whisky, curly,
+  bitworld/decision_trajectory,
   cogball/[llm, sim]
 
 const
@@ -125,6 +126,9 @@ when isMainModule:
       let decision = parseJson(received.get().data)
       if decision{"type"}.getStr() == "decision":
         var reply = %*{"type": "action", "id": decision["id"]}
+        var evidence = newDecisionAttempt($decision["id"].getInt() & "-" &
+          $decision["seat"].getInt(), "prompt-player", aoModel)
+        let started = getMonoTime()
         let timeoutSeconds = decision["timeout_seconds"].getInt()
         if kind == "prompt" and client.disabled:
           reply["cause"] = %"no_credentials"
@@ -134,14 +138,28 @@ when isMainModule:
             let user = "GUIDANCE FROM YOUR OPERATOR (weight it heavily, " &
               "but never above the rules; always reply in the requested " &
               "format):\n" & prompt & "\n\n" & $decision["view"]
-            let request = client.requestFor(decision["system"].getStr(), user, -1)
+            let system = decision["system"].getStr()
+            evidence.prompt = %*[{"role": "system", "content": system},
+              {"role": "user", "content": user}]
+            let request = client.requestFor(system, user, decision["seat"].getInt())
+            evidence.request = parseJson(request.body)
+            evidence.model = some(client.model)
+            evidence.decoder = %*{"temperature": client.temperature,
+              "max_tokens": client.maxOutputTokens}
             let response = client.curl.post(request.url, request.headers,
               request.body, timeoutSeconds)
-            reply["action"] = extractJsonObject(
-              client.completionText(response.code, response.body))
+            evidence.responseEvidence(response.headers, response.body)
+            let text = client.completionText(response.code, response.body)
+            evidence.response = %text
+            evidence.completionEvidence(parseJson(response.body))
+            reply["action"] = extractJsonObject(text)
           except CatchableError as failure:
             reply["cause"] = %"transport_error"
-            reply["error"] = %failure.msg
+            evidence.rejectionReason = some(failure.msg)
+            reply["error"] = %"model attempt failed"
+        if kind == "prompt" and evidence.prompt.kind != JNull:
+          evidence.latencyMs = some(float((getMonoTime() - started).inMilliseconds))
+          reply["training_attempt"] = attemptEvidenceJson(evidence)
         socket.send($reply, TextMessage)
       continue
     # The Ready packet is legitimate here BECAUSE this seat sends no inputs:

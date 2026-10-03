@@ -204,3 +204,11 @@ decisions now run in ordinary player containers. The game sends both private
 views before waiting for either reply, validates both directives with the same
 parser, and keeps the actuator log, results and replay. The source of each
 robot input mask is unchanged, so `gameHash` and `GameVersion` are unchanged.
+
+## Scripted coaches consume the observed precision
+
+Production baselines now consume the same two-decimal positions as language coaches.
+They cannot use hidden sub-centimetre state to choose roles or targets. The canonical
+private action preserves the precise target computed from those visible positions;
+spectator directive records retain their existing two-decimal display rounding.
+The physics modules, constants, and stored replay layout are unchanged.

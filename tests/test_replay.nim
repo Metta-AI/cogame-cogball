@@ -44,7 +44,7 @@ proc recordEpisode(path: string): tuple[hashes: seq[uint64], sim: SimServer] =
           not (sim.hasDirective[Azure] and sim.hasDirective[Crimson]):
         let turn = elapsed div sim.turnTicks()
         for seat in Seat:
-          var directive = sim.baselineDirective(
+          var directive = sim.policyView().baselineDirective(
             seat, (if seat == Azure: "formation" else: "swarm"), turn)
           directive.robots[0].say = clipRunes(NonAsciiSay, MaxSayRunes)
           # Two hand-planted attempt records, so the summary's `fallbacks`

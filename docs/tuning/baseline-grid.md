@@ -137,3 +137,17 @@ tools/tune_baselines.sh CogballKeeperArc 1000000 2000000 3000000 4000000
 
 The runner is deterministic: same seeds, same constants, same numbers. Every
 row above is reproducible from this commit.
+
+## Observation parity comparison
+
+The training modernization projects scripted policy inputs to the coach's two-decimal
+positions. No tuned constant changes. The same committed 24 seeds, both sides played,
+produce the following 48-match CPU comparison through the actual control layer:
+
+| input | Formation W-D-L | goals | goalless | score |
+|---|---|---|---|---|
+| original precise sim positions | 30-3-15 | 103:67 | 0 | 63/96 |
+| authoritative observed positions | 26-10-12 | 109:81 | 0 | 62/96 |
+
+The prior sweep tables remain historical evidence for the original input precision.
+Use `tools/tune_baselines.nim` to reproduce the observed-input comparison.

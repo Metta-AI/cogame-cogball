@@ -123,3 +123,7 @@ Design notes live in `docs/plans/`. The lineage is
 [`Metta-AI/coworld-ctf`](https://github.com/Metta-AI/coworld-ctf) (paintbot):
 the game loop, the per-tick replays, the static wasm viewer, the broadcast
 chrome and the CI wiring are its, kept; the physics replaces the arena rules.
+
+## Training
+
+Private authoritative trajectories and the canonical corpus/import path are documented in [TRAINING.md](https://github.com/Metta-AI/cogame-cogball/blob/main/TRAINING.md).

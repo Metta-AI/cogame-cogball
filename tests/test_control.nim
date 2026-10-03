@@ -34,7 +34,7 @@ proc onlyLegalBits() =
       doAssert (masks[i] and not LegalBits) == 0,
         "illegal bit in mask " & $masks[i] & " for " & robotId(i)
       doAssert (masks[i] and ButtonB) == 0
-      doAssert (masks[i] and ButtonC) == 0
+      doAssert (masks[i] and 0x80'u8) == 0
       doAssert (masks[i] and ButtonUp) == 0 or (masks[i] and ButtonDown) == 0,
         "Up and Down together on " & robotId(i)
       doAssert (masks[i] and ButtonLeft) == 0 or
@@ -49,7 +49,7 @@ proc pureFunction() =
   for _ in 0 ..< 100:
     sim.pseudoWorld(rng)
     for seat in Seat:
-      sim.activeDirective[seat] = sim.formationDirective(seat, 3)
+      sim.activeDirective[seat] = sim.policyView().formationDirective(seat, 3)
       sim.hasDirective[seat] = true
     let a = sim.compileMasks(sim.activeDirective)
     let b = sim.compileMasks(sim.activeDirective)
@@ -67,7 +67,7 @@ proc kickNeverIsHonoured() =
     if onBoards(sim.ball.x, sim.ball.y):
       continue                          ## the override's own case, below
     for seat in Seat:
-      var directive = sim.formationDirective(seat, 1)
+      var directive = sim.policyView().formationDirective(seat, 1)
       for slot in 0 ..< RobotsPerSeat:
         directive.robots[slot].kick = kickNever
       sim.activeDirective[seat] = directive
@@ -92,7 +92,7 @@ proc cooldownRespected() =
     sim.robots[i].headingQ = 0
     sim.robots[i].kickCooldown = 0
   for seat in Seat:
-    sim.activeDirective[seat] = sim.formationDirective(seat, 0)
+    sim.activeDirective[seat] = sim.policyView().formationDirective(seat, 0)
     for slot in 0 ..< RobotsPerSeat:
       sim.activeDirective[seat].robots[slot].intent = inShoot
       sim.activeDirective[seat].robots[slot].kick = kickAuto
@@ -197,7 +197,7 @@ proc boardsOverride() =
   sim.robots[0].y = 900_000'i32
   sim.robots[0].headingQ = 0
   for seat in Seat:
-    var directive = sim.formationDirective(seat, 0)
+    var directive = sim.policyView().formationDirective(seat, 0)
     for slot in 0 ..< RobotsPerSeat:
       directive.robots[slot].kick = kickNever   ## the policy says do not kick
     sim.activeDirective[seat] = directive
@@ -241,7 +241,7 @@ proc cornerIsEscaped() =
     let elapsed = sim.tickCount - sim.gameStartTick
     if elapsed mod sim.turnTicks() == 0 or not sim.hasDirective[Azure]:
       for seat in Seat:
-        sim.activeDirective[seat] = sim.formationDirective(
+        sim.activeDirective[seat] = sim.policyView().formationDirective(
           seat, elapsed div sim.turnTicks())
         sim.hasDirective[seat] = true
     sim.stepWith(sim.compileMasks(sim.activeDirective))
@@ -277,7 +277,7 @@ proc holdFacesTheBall() =
       kick: kickNever)
   sim.activeDirective[Azure] = directive
   sim.hasDirective[Azure] = true
-  sim.activeDirective[Crimson] = sim.formationDirective(Crimson, 0)
+  sim.activeDirective[Crimson] = sim.policyView().formationDirective(Crimson, 0)
   sim.hasDirective[Crimson] = true
   let mask = sim.compileMask(0, directive)
   # The ball is north-north-west of the robot, so it must turn (either bit).

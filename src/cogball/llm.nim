@@ -16,8 +16,8 @@
 ## validation, actuator masks, fallback, results and replay.
 
 import
-  std/[json, os, strutils],
-  bitworld/runtime,
+  std/[json, math, options, os, parsejson, streams, strutils],
+  bitworld/[runtime, decision_trajectory],
   curly,
   sim
 
@@ -42,6 +42,7 @@ type
     sidecarEndpoint: string
     model*: string
     maxOutputTokens*: int
+    temperature*: float
     disabled*: bool            ## true once credentials are known-unavailable.
 
 proc resolveApiKey(): string =
@@ -60,8 +61,12 @@ proc resolveApiKey(): string =
 proc newLlmClient*(config: GameConfig): LlmClient =
   result = LlmClient(
     model: config.model,
-    maxOutputTokens: config.maxOutputTokens
+    maxOutputTokens: config.maxOutputTokens,
+    temperature: parseFloat(getEnv("COWORLD_LLM_TEMPERATURE", "1"))
   )
+  if classify(result.temperature) in {fcNan, fcInf, fcNegInf} or
+      result.temperature < 0 or result.temperature > 1:
+    raise newException(ValueError, "COWORLD_LLM_TEMPERATURE must be finite and in 0..1")
   let sidecarEndpoint = getEnv("COWORLD_LLM_ENDPOINT").strip()
   if sidecarEndpoint.len > 0:
     result.transport = ltSidecar
@@ -85,6 +90,7 @@ proc requestFor*(client: LlmClient, system, user: string, slot: int): LlmRequest
   var body = %*{
     "model": client.model,
     "max_tokens": client.maxOutputTokens,
+    "temperature": client.temperature,
     "system": system,
     "messages": [{"role": "user", "content": user}]
   }
@@ -128,16 +134,62 @@ proc completionText*(client: LlmClient, code: int, body: string): string =
     raise newException(CogballError, "reply cut off at max_tokens before " &
       "any JSON: " & result[0 .. min(result.high, 160)].replace("\n", " "))
 
+type JsonProposal* = object
+  ok*: bool
+  node*: JsonNode
+  reason*: string
+
+proc jsonProposal*(text: string): JsonProposal =
+  ## One domain parse boundary shared by prompt players and training bridges.
+  let first = text.find('{')
+  let last = text.rfind('}')
+  if first < 0 or last <= first:
+    return JsonProposal(node: newJNull(), reason: "no JSON object in response")
+  let body = text[first .. last]
+  var parser: JsonParser
+  parser.open(newStringStream(body), "coach response")
+  defer: parser.close()
+  while true:
+    parser.next()
+    if parser.kind == jsonError:
+      return JsonProposal(node: newJNull(), reason: parser.errorMsg())
+    if parser.kind == jsonEof: break
+  JsonProposal(ok: true, node: parseJson(body))
+
 proc extractJsonObject*(text: string): JsonNode =
-  ## Pulls the outermost `{...}` object out of a model response, tolerating
-  ## markdown fences and a prose prefix (babel's, ported unchanged).
-  let
-    start = text.find('{')
-    stop = text.rfind('}')
-  if start < 0 or stop <= start:
-    var head = text.strip()
-    if head.len > 160:
-      head = head[0 ..< 160] & "..."
-    raise newException(CogballError,
-      "no JSON object in response: " & head.replace("\n", " "))
-  parseJson(text[start .. stop])
+  let proposal = jsonProposal(text)
+  if not proposal.ok: raise newException(CogballError, proposal.reason)
+  proposal.node
+
+proc responseEvidence*(attempt: var DecisionAttempt, headers: HttpHeaders, body: string) =
+  ## Preserve native metadata before the existing domain completion parser runs.
+  attempt.rawResponse = %body
+  if headers.contains("X-Softmax-Llm-Call-Id"):
+    attempt.platformCallId = some(headers["X-Softmax-Llm-Call-Id"])
+  for header in ["X-Coworld-Checkpoint-Sha256", "X-Coworld-Tokenizer-Sha256",
+      "X-Coworld-Chat-Template-Sha256"]:
+    if headers.contains(header):
+      case header
+      of "X-Coworld-Checkpoint-Sha256": attempt.modelIdentity = some(headers[header])
+      of "X-Coworld-Tokenizer-Sha256": attempt.tokenizerIdentity = some(headers[header])
+      else: attempt.chatTemplateSha256 = some(headers[header])
+
+proc completionEvidence*(attempt: var DecisionAttempt, payload: JsonNode) =
+  attempt.model = some(payload["model"].getStr())
+  attempt.stopReason = some(payload["stop_reason"].getStr())
+  if payload.hasKey("usage"):
+    attempt.inputTokens = some(payload["usage"]["input_tokens"].getInt())
+    attempt.outputTokens = some(payload["usage"]["output_tokens"].getInt())
+  if payload.hasKey("sampling_evidence") and payload["sampling_evidence"].kind != JNull:
+    let sampling = payload["sampling_evidence"]
+    var promptIds, sampledIds: seq[int]
+    var probabilities: seq[float]
+    for token in sampling["prompt_token_ids"]: promptIds.add(token.getInt())
+    for token in sampling["completion_token_ids"]: sampledIds.add(token.getInt())
+    attempt.promptTokenIds = some(promptIds)
+    attempt.sampledTokenIds = some(sampledIds)
+    if sampling["behavior_log_probs"].kind != JNull:
+      for probability in sampling["behavior_log_probs"]: probabilities.add(probability.getFloat())
+      attempt.behaviorLogprobs = some(probabilities)
+    attempt.stopReason = some(sampling["stop_reason"].getStr())
+    attempt.decoder["sampling_evidence"] = copy(sampling)

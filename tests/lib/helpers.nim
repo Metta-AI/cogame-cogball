@@ -61,6 +61,12 @@ type ScriptedMatch* = object
   rule*: EndRule
   masks*: seq[array[RobotCount, uint8]]
 
+proc preciseMaskFixtureView(sim: SimServer): PolicyView =
+  ## Historical physics fixtures pin their input masks, independently of coach precision.
+  result.ball = PolicyPosition(x: sim.ball.x, y: sim.ball.y)
+  for index in 0 ..< RobotCount:
+    result.robots[index] = PolicyPosition(x: sim.robots[index].x, y: sim.robots[index].y)
+
 proc runScriptedMatch*(
   config: GameConfig,
   azure = "formation",
@@ -69,6 +75,8 @@ proc runScriptedMatch*(
 ): ScriptedMatch =
   ## A whole episode driven by the scripted baselines through the REAL control
   ## layer — the same path the server takes, minus the sockets.
+  ## collectMasks selects the historical precise physics/replay fixture; it is
+  ## not a coach policy benchmark. Ordinary matches use the canonical observed view.
   var sim = seatedSim(config)
   var directives: array[Seat, Directive]
   for seat in Seat:
@@ -82,8 +90,9 @@ proc runScriptedMatch*(
       if elapsed mod sim.turnTicks() == 0 or
           not (sim.hasDirective[Azure] and sim.hasDirective[Crimson]):
         let turn = elapsed div sim.turnTicks()
-        directives[Azure] = sim.baselineDirective(Azure, azure, turn)
-        directives[Crimson] = sim.baselineDirective(Crimson, crimson, turn)
+        let policy = if collectMasks: sim.preciseMaskFixtureView() else: sim.policyView()
+        directives[Azure] = policy.baselineDirective(Azure, azure, turn)
+        directives[Crimson] = policy.baselineDirective(Crimson, crimson, turn)
         for seat in Seat:
           sim.activeDirective[seat] = directives[seat]
           sim.hasDirective[seat] = true

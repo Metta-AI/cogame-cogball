@@ -20,7 +20,8 @@ proc fullMatchIsFast() =
 
 proc replayScanIsFast() =
   ## The whole-match precompute walk is what the hosted viewer pays before the
-  ## momentum graph and the beat markers can ship.
+  ## momentum graph and the beat markers can ship. This uses the historical
+  ## precise mask fixture, not an ordinary coach policy strength measurement.
   let started = epochTime()
   let recorded = runScriptedMatch(testConfig(seed = 7919, maxTicks = 2400),
     "formation", "formation", collectMasks = true)

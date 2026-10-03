@@ -89,3 +89,33 @@ if __name__ == "__main__":
     for name in ("default", "sprint"):
         for use_teacher in (True, False):
             play(name, use_teacher)
+
+# Language decisions use the hosted structured directive parser, not numeric choices.
+for variant in ("default", "sprint"):
+    process = subprocess.Popen([str(BINARY), str(MANIFEST), variant, "--language", "Play total football."],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, cwd="/tmp")
+    try:
+        observation = request(process, {"kind": "reset", "seed": "language-" + variant, "players": 2})
+        decisions = 0
+        while observation["kind"] == "decision":
+            assert observation["inference_mode"] == "text_action"
+            assert json.loads(observation["messages"][1]["content"].split("\n\n", 1)[1]) == observation["semantic_view"]
+            if decisions == 0:
+                rejected = request(process, {"kind": "step", "decision_id": 0, "response": "not-json"})
+                assert rejected["kind"] == "rejected" and rejected["observation"] == observation
+                consumed = request(process, {"kind": "step", "decision_id": 0, "response": "still-invalid"})
+                assert consumed["kind"] == "consumed_rejection" and "robots" in consumed["action"]
+                observation = consumed["observation"]
+            else:
+                response = request(process, {"kind": "teacher"})["response"]
+                accepted = request(process, {"kind": "step", "decision_id": decisions, "response": response})
+                assert accepted["kind"] == "accepted" and accepted["action"] == json.loads(response)
+                observation = accepted["observation"]
+            decisions += 1
+            assert decisions <= (80 if variant == "default" else 40)
+        assert observation["kind"] == "terminal" and sum(observation["scores"].values()) == 1000
+        print(variant, "language", decisions, "canonical decisions")
+    finally:
+        process.stdin.close()
+        process.stdout.close()
+        assert process.wait(timeout=5) == 0
