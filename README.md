@@ -94,7 +94,7 @@ src/cogball/
   control.nim                directive -> six actuator masks (integer only)
   directives.nim             view coordinates, rune truncation, the parser
   baselines.nim              the formation and swarm scripted policies
-  llm.nim                    player-side prompt credential ladder and transport
+  llm.nim                    native sidecar request and private response evidence
   decide.nim                 the turn engine: one parallel batch per turn
   server.nim                 mummy HTTP/ws, the COGAME_* contract, the loop
   replays.nim                the COWLDBAL codec, keyframes, the scan

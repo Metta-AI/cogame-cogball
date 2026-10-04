@@ -1,9 +1,9 @@
 ## Export complete baseline matches for Metta post-training.
 ## nim r -d:release --path:src tools/export_posttrain.nim OUTPUT EPISODES [FIRST_SEED] [default|sprint]
 
-import std/[json, os, osproc, strutils]
+import std/[json, os, osproc, strutils, tables]
 import bitworld/[spriteprotocol, decision_trajectory]
-import cogball/[baselines, control, decide, directives, roster, sim, training_capture]
+import cogball/[control, decide, roster, sim, training_capture]
 
 when isMainModule:
   let args = commandLineParams()
@@ -41,13 +41,15 @@ when isMainModule:
     game.gameEventLoggingEnabled = false
     discard game.addPlayer("azure-policy", 0, "")
     discard game.addPlayer("crimson-policy", 1, "")
-    game.startGame()
+    while game.phase == Lobby:
+      game.step(default(array[RobotCount, InputState]),
+        default(array[RobotCount, InputState]))
     let engine = newTurnEngine(nil)
     for seat in Seat:
       engine.policies[seat] = SeatPolicy(kind: pkScripted,
         baseline: "formation", label: "formation", connected: true)
     let capture = newMatchCapture("cogball-" & variant & "-" & $seed,
-      GameVersion, revision, seed)
+      "source-engine-1", revision, seed)
     var
       decisions = 0
       previous = newSeq[InputState](RobotCount)
@@ -72,7 +74,7 @@ when isMainModule:
           lastGoals[seat] = game.stats[seat].goals
           engine.noteGoal(game.tickCount, int(game.lastGoalBy), seat)
     doAssert game.endReason == reasonComplete and decisions > 0
-    capture.finishMatch(game)
+    capture.finishMatch(game, esCompleted, newJObject(), initTable[string, DecisionAttempt]())
     completeEpisodes.add(capture.trajectory.eventsJsonl())
     runs.add(%*{"seed": seed, "decisions": decisions,
       "azure_goals": game.goals(Azure), "crimson_goals": game.goals(Crimson),
@@ -84,7 +86,8 @@ when isMainModule:
     "variant": variant,
     "source_revision": revision,
     "teacher": "scripted-formation",
-    "game_version": GameVersion,
+    "game_version": "source-engine-1",
+    "engine_version": GameVersion,
     "split_authority": "shared Coworld SDK and application importer by seed_family",
     "inference_mode": "text_action",
     "runs": runs

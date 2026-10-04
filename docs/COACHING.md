@@ -120,7 +120,7 @@ coworld upload-policy coworld-cogball:latest \
   --name my-cogball \
   --run /bin/cogball-player \
   --secret-env PLAYER_PROMPT="<your strategy>" \
-  --use-bedrock --bedrock-model anthropic/claude-haiku-4.5
+  --use-llm --llm-model anthropic/claude-haiku-4.5
 ```
 
 `PLAYER_SCRIPTED=formation` or `PLAYER_SCRIPTED=swarm` fields a built-in

@@ -13,8 +13,12 @@ MANIFEST = Path(__file__).resolve().parents[1] / "coworld_manifest_template.json
 
 def process_for(variant: str) -> subprocess.Popen[str]:
     return subprocess.Popen(
-        [str(BINARY), str(MANIFEST), variant], stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, text=True, bufsize=1, cwd="/tmp",
+        [str(BINARY), str(MANIFEST), variant],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        cwd="/tmp",
     )
 
 
@@ -29,7 +33,10 @@ def play(variant: str, teacher: bool) -> None:
     process = process_for(variant)
     rng = random.Random(29)
     try:
-        observation = request(process, {"kind": "reset", "seed": f"cogball-{variant}-{teacher}", "players": 2})
+        observation = request(
+            process,
+            {"kind": "reset", "seed": f"cogball-{variant}-{teacher}", "players": 2},
+        )
         widths = set()
         decisions = 0
         while observation["kind"] == "decision":
@@ -47,8 +54,14 @@ def play(variant: str, teacher: bool) -> None:
                 choice = json.loads(request(process, {"kind": "teacher"})["response"])
             else:
                 choice = rng.choice(encoding["actions"])
-            result = request(process, {"kind": "step", "decision_id": decisions,
-                                       "response": json.dumps(choice)})
+            result = request(
+                process,
+                {
+                    "kind": "step",
+                    "decision_id": decisions,
+                    "response": json.dumps(choice),
+                },
+            )
             assert result["kind"] == "accepted" and result["action"] == choice
             observation = result["observation"]
             decisions += 1
@@ -58,8 +71,13 @@ def play(variant: str, teacher: bool) -> None:
         assert sum(observation["scores"].values()) == 1000
         assert abs(sum(observation["utilities"].values())) < 1e-9
         assert len(widths) == 1 and decisions > 0
-        print(variant, "teacher" if teacher else "random", widths.pop(), decisions,
-              observation["scores"])
+        print(
+            variant,
+            "teacher" if teacher else "random",
+            widths.pop(),
+            decisions,
+            observation["scores"],
+        )
     finally:
         assert process.stdin is not None and process.stdout is not None
         process.stdin.close()
@@ -73,8 +91,14 @@ def check_frozen_views() -> None:
         process = process_for("default")
         try:
             request(process, {"kind": "reset", "seed": "cogball-frozen", "players": 2})
-            result = request(process, {"kind": "step", "decision_id": 0,
-                                       "response": json.dumps({"choice": choice})})
+            result = request(
+                process,
+                {
+                    "kind": "step",
+                    "decision_id": 0,
+                    "response": json.dumps({"choice": choice}),
+                },
+            )
             views.append(result["observation"]["semantic_view"])
         finally:
             assert process.stdin is not None and process.stdout is not None
@@ -92,28 +116,61 @@ if __name__ == "__main__":
 
 # Language decisions use the hosted structured directive parser, not numeric choices.
 for variant in ("default", "sprint"):
-    process = subprocess.Popen([str(BINARY), str(MANIFEST), variant, "--language", "Play total football."],
-                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, cwd="/tmp")
+    process = subprocess.Popen(
+        [str(BINARY), str(MANIFEST), variant, "--language", "Play total football."],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        cwd="/tmp",
+    )
     try:
-        observation = request(process, {"kind": "reset", "seed": "language-" + variant, "players": 2})
+        observation = request(
+            process, {"kind": "reset", "seed": "language-" + variant, "players": 2}
+        )
         decisions = 0
         while observation["kind"] == "decision":
             assert observation["inference_mode"] == "text_action"
-            assert json.loads(observation["messages"][1]["content"].split("\n\n", 1)[1]) == observation["semantic_view"]
+            if decisions < 2:
+                assert 0 < observation["semantic_view"]["clock"]["played_s"] < 0.05
+            elif decisions == 2:
+                assert observation["semantic_view"]["clock"]["played_s"] == 5
+            assert (
+                json.loads(observation["messages"][1]["content"].split("\n\n", 1)[1])
+                == observation["semantic_view"]
+            )
             if decisions == 0:
-                rejected = request(process, {"kind": "step", "decision_id": 0, "response": "not-json"})
-                assert rejected["kind"] == "rejected" and rejected["observation"] == observation
-                consumed = request(process, {"kind": "step", "decision_id": 0, "response": "still-invalid"})
-                assert consumed["kind"] == "consumed_rejection" and "robots" in consumed["action"]
+                rejected = request(
+                    process, {"kind": "step", "decision_id": 0, "response": "not-json"}
+                )
+                assert (
+                    rejected["kind"] == "rejected"
+                    and rejected["observation"] == observation
+                )
+                consumed = request(
+                    process,
+                    {"kind": "step", "decision_id": 0, "response": "still-invalid"},
+                )
+                assert (
+                    consumed["kind"] == "consumed_rejection"
+                    and "robots" in consumed["action"]
+                )
                 observation = consumed["observation"]
             else:
                 response = request(process, {"kind": "teacher"})["response"]
-                accepted = request(process, {"kind": "step", "decision_id": decisions, "response": response})
-                assert accepted["kind"] == "accepted" and accepted["action"] == json.loads(response)
+                accepted = request(
+                    process,
+                    {"kind": "step", "decision_id": decisions, "response": response},
+                )
+                assert accepted["kind"] == "accepted" and accepted[
+                    "action"
+                ] == json.loads(response)
                 observation = accepted["observation"]
             decisions += 1
             assert decisions <= (80 if variant == "default" else 40)
-        assert observation["kind"] == "terminal" and sum(observation["scores"].values()) == 1000
+        assert (
+            observation["kind"] == "terminal"
+            and sum(observation["scores"].values()) == 1000
+        )
         print(variant, "language", decisions, "canonical decisions")
     finally:
         process.stdin.close()

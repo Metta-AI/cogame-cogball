@@ -1,11 +1,13 @@
 # Cogball training
 
 The game owns acceptance, exact installed directives, robot inputs, and final scores.
-Private trajectories retain every player attempt and native HTTP request/response.
+Private trajectories stage every issued attempt until readers join and cleanup is acknowledged.
+They retain actual native headers, byte prefixes, completion flags, and received identities.
 They never enter spectator replay records or the player Docker image.
 
 Set `COGAME_SAVE_TRAJECTORY_URI`, `COWORLD_EPISODE_ID`, `COWORLD_GAME_VERSION`, and
-`COWORLD_SOURCE_REVISION` on the game. Production provenance must identify the actual
+`COWORLD_SOURCE_REVISION` on the game. Runtime injection also supplies the registered
+`COWORLD_GAME_NAME` and immutable `COWORLD_GAME_IMAGE_DIGEST`. Production provenance must identify the actual
 published version and immutable source. Deploy the shared runtime injection before
 publishing this source as a Coworld.
 
@@ -18,6 +20,8 @@ Set `COWORLD_LLM_TEMPERATURE=0` for greedy checkpoints or `1` for qualified nati
 sampling. Token IDs and behavior probabilities are retained only when actually provided.
 
 The formation/swarm policies read the same rounded positions the coach observes.
+Teacher export and language resets advance the actual lobby countdown before observing play.
+Their opening interval ends at the same absolute turn boundary as the hosted engine.
 Teacher export consumes the authoritative private JSON view. Exact target coordinates
 remain in private applied actions; spectator coordinates retain display rounding.
 
@@ -31,13 +35,18 @@ nim c -d:release --path:src -o:/tmp/cogball-replay-check tools/check_training_re
 /tmp/cogball-replay-check replay.bitreplay trajectory.jsonl
 ```
 
+Use the reviewed Metta SDK and application importer for these commands.
+The publishing CLI version does not establish training-consumer qualification.
+Scripted teacher exports use `source-engine-1`, with the rules version recorded separately.
+All serving fields are null; teacher targets require external, content-bound authority.
+
 Export raw complete teacher episodes, then use the shared dataset path:
 
 ```bash
 nim c -d:release --path:src -o:/tmp/cogball-export tools/export_posttrain.nim
-/tmp/cogball-export /tmp/cogball-corpus 10 1 default
+/tmp/cogball-export /tmp/cogball-corpus 20 1 default
 coworld training export /tmp/cogball-corpus/trajectories.jsonl /tmp/cogball-qualified --transport local
-python -m metta_posttrain.cli export-hosted /tmp/cogball-qualified/episodes.jsonl /tmp/cogball-dataset
+python -m metta_posttrain.cli export-hosted --source /tmp/cogball-qualified/episodes.jsonl --output /tmp/cogball-dataset --authority /absolute/path/external-review-authority.json
 ```
 
 The shared importer splits by `cogball-<seed>` across variants and retains
