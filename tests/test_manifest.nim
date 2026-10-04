@@ -136,6 +136,8 @@ proc protocolsAndDocs() =
   for side in ["player", "global"]:
     doAssert protocols.hasKey(side), "game.protocols lacks " & side
     doAssert protocols[side]["value"].getStr().len > 0
+  doAssert protocols["player"]["type"].getStr() == "text"
+  doAssert protocols["player"]["value"].getStr() == readFile("docs/PROTOCOL.md")
   let docs = manifest["game"]["docs"]
   doAssert docs["readme"]["type"].getStr() == "text",
     "game.docs.readme must be inline TEXT, not a URI"
