@@ -112,7 +112,9 @@ for flow in (
             pass
 
     provider = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Provider)
-    threading.Thread(target=provider.serve_forever, daemon=True).start()
+    provider.daemon_threads = False
+    provider_owner = threading.Thread(target=provider.serve_forever, daemon=True)
+    provider_owner.start()
     if len(sys.argv) == 4:
         target = Path(sys.argv[3]) / flow
         target.mkdir(parents=True, mode=0o700, exist_ok=False)
@@ -232,7 +234,10 @@ for flow in (
                             and attempt["raw_response"] is None
                         )
                         assert attempt["latency_ms"] is not None
-                        assert attempt["response_complete"] is False
+                        assert attempt["response_complete"] is None
+                        assert attempt["http_status"] is None
+                        assert attempt["response_headers_b64"] is None
+                        assert attempt["response_body_b64"] is None
                         assert attempt["response_reader_joined"] is True
                         assert attempt["rejection_reason"].startswith(
                             "incomplete_native_attempt: timeout"
@@ -330,4 +335,7 @@ for flow in (
                     process.wait(timeout=5)
             for log in logs:
                 log.close()
-    provider.shutdown()
+            provider.shutdown()
+            provider.server_close()
+            provider_owner.join(timeout=2)
+            assert not provider_owner.is_alive()
