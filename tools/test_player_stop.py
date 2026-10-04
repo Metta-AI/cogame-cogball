@@ -130,6 +130,13 @@ for mode in ("stop", "phase_stop", "term", "int", "deadline"):
         elif mode != "deadline":
             process.send_signal(signal.SIGTERM if mode == "term" else signal.SIGINT)
         stopped = json.loads(connection.recv(timeout=3))
+        queued_attempts = []
+        if stopped["type"] == "action":
+            # A transport timeout can finish just before the lifetime deadline.
+            assert mode == "deadline"
+            assert "action" not in stopped and stopped["cause"] == "transport_error"
+            queued_attempts.append(stopped["training_attempt"])
+            stopped = json.loads(connection.recv(timeout=3))
         assert stopped["type"] == "stopped"
         assert stopped["worker_status"] in (
             {"joined", "no_active_call"}
@@ -141,6 +148,8 @@ for mode in ("stop", "phase_stop", "term", "int", "deadline"):
         assert stopped["decision_id"] == expected_id and stopped["stop_id"] == nonce
         assert len(stopped["attempts"]) == 1
         attempt = stopped["attempts"][0]
+        for queued in queued_attempts:
+            assert queued == attempt
         assert base64.b64decode(attempt["response_body_b64"], validate=True) == b"\xc3"
         assert (
             attempt["response_complete"] is False
