@@ -64,7 +64,7 @@ proc retainAttempt*(exchange: NativeExchange, socket: WebSocket, id: string,
           evidence.responseReaderJoined.isSome or evidence.httpStatus.isSome or
           evidence.latencyMs.isSome or evidence.inputTokens.isSome or evidence.outputTokens.isSome or
           evidence.modelIdentity.isSome or evidence.tokenizerIdentity.isSome or
-          evidence.chatTemplateSha256.isSome or evidence.stopReason.isSome or
+          evidence.chatTemplateSha256.isSome or evidence.stopReason.isSome or evidence.rejectionReason.isSome or
           evidence.promptTokenIds.isSome or evidence.sampledTokenIds.isSome or evidence.behaviorLogprobs.isSome:
         raise newException(CogballError, "native start already contains response evidence")
     elif not result.started:
@@ -75,7 +75,8 @@ proc retainAttempt*(exchange: NativeExchange, socket: WebSocket, id: string,
     for field in ["prompt", "request", "decoder", "policy", "origin"]:
       if after[field] != before[field]:
         raise newException(CogballError, "native progress changed its started request")
-    if stage == nesStarted or (before["latency_ms"].kind != JNull and before != after):
+    if stage == nesStarted or ((before["latency_ms"].kind != JNull or
+        before["response_reader_joined"] == %true) and before != after):
       raise newException(CogballError, "finished native evidence is immutable")
     for field in ["response_body_b64", "response_headers_b64"]:
       if before[field].kind != JNull and (after[field].kind != JString or

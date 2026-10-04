@@ -31,6 +31,13 @@ doAssertRaises(CogballError):
     getMonoTime(), nesStarted)
 doAssert issued.evidence.isNone
 
+var preRejected = evidence
+preRejected.rejectionReason = some("already received provider failure")
+doAssertRaises(CogballError):
+  discard exchange.retainAttempt(socket, issued.id, attemptEvidenceJson(preRejected),
+    getMonoTime(), nesStarted)
+doAssert issued.evidence.isNone
+
 discard exchange.retainAttempt(socket, issued.id, attemptEvidenceJson(evidence),
   getMonoTime(), nesStarted)
 let body = $(%*{"model": "fixture", "content": [{"type": "text", "text": "{}"}]})
@@ -41,11 +48,17 @@ evidence.responseHeadersB64 = some(encode("HTTP/1.1 200 OK\r\n\r\n"))
 evidence.httpStatus = some(200)
 evidence.responseComplete = some(true)
 evidence.responseReaderJoined = some(true)
-evidence.latencyMs = some(3.0)
+evidence.latencyMs = none(float)
 # Late facts remain retained; only the separate ingress window selects actions.
 discard exchange.retainAttempt(socket, issued.id, attemptEvidenceJson(evidence),
   issued.deadline + initDuration(milliseconds = 1), nesReceived)
 issued.validateModelAction()
+var rewrittenUsage = evidence
+rewrittenUsage.inputTokens = some(99)
+doAssertRaises(CogballError):
+  discard exchange.retainAttempt(socket, issued.id, attemptEvidenceJson(rewrittenUsage),
+    getMonoTime(), nesReceived)
+doAssert issued.evidence.get().inputTokens.isNone
 var rewritten = evidence
 rewritten.response = %"rewritten completion"
 doAssertRaises(CogballError):

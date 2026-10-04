@@ -164,6 +164,10 @@ jobs:
           nim c -d:release --path:src -o:/tmp/cogball-player src/cogball_player.nim
           nim c -d:release --path:src -o:/tmp/cogball-replay-check tools/check_training_replay.nim
           nim c -d:release --path:src -o:/tmp/cogball-external-player tools/test_external_player.nim
+          nim c -d:release --path:src -o:/tmp/cogball-chronology-player tests/support/start_chronology_player.nim
+          export COWORLD_TEST_SOURCE_REVISION="$(git rev-parse HEAD)"
+          python3 tools/test_start_chronology.py /tmp/cogball-game /tmp/cogball-chronology-player /tmp/cogball-chronology-first first
+          python3 tools/test_start_chronology.py /tmp/cogball-game /tmp/cogball-chronology-player /tmp/cogball-chronology-joined joined
           python3 tools/test_native_trajectory.py /tmp/cogball-game /tmp/cogball-player /tmp/cogball-native-proof
           for flow in /tmp/cogball-native-proof/*; do
             /tmp/cogball-replay-check "$flow/replay.bitreplay" "$flow/trajectory.jsonl"
