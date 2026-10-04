@@ -1,6 +1,7 @@
 # Build Docker. Two binaries out of ONE image, selected by entrypoint:
 # /bin/cogball is the game server, /bin/cogball-player is every policy.
 FROM debian:bookworm-slim AS build
+SHELL ["/usr/bin/nice", "-n", "19", "/bin/sh", "-c"]
 
 RUN apt-get update && \
   apt-get install -y --no-install-recommends \
@@ -47,6 +48,7 @@ RUN nim c --parallelBuild:1 $NimFlags --nimcache:/tmp/cogball-nimcache --out:cog
 
 # Run Docker.
 FROM debian:bookworm-slim
+SHELL ["/usr/bin/nice", "-n", "19", "/bin/sh", "-c"]
 
 RUN apt-get update && \
   apt-get install -y --no-install-recommends ca-certificates libcurl4 && \
