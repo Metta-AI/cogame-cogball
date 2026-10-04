@@ -32,13 +32,13 @@
 ## partial replay instead of an unattributable episode.
 
 import
-  std/[json, locks, monotimes, nativesockets, options, os, strutils, tables, times],
+  std/[json, locks, monotimes, nativesockets, options, os, sets, strutils, sysrand, tables, times],
   bitworld/client as bitworldClient,
-  bitworld/[runtime, decision_trajectory],
+  bitworld/[runtime, decision_trajectory, native_stop, artifact_runtime],
   bitworld/spriteprotocol,
   mummy,
   sim, roster, control, directives, decide,
-  global, broadcast, replays, replay_runtime, events, wire_constants, training_capture
+  global, broadcast, replays, replay_runtime, events, wire_constants, training_capture, native_exchange
 
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
@@ -49,16 +49,21 @@ type
     clientSocket: SocketHandle
     clientId: uint64
 
+  PrivatePlayerMessage = object
+    data: string
+    receivedAt: MonoTime
+
   WebSocketAppState = object
     lock: Lock
     replayServerMode: bool
     replayLoaded: bool
+    started, stopping, sealed: bool
+    authenticatedPlayers: Table[WebSocket, int]
     pendingReplayUri: string
     loadingReplayUri: string
     currentReplayUri: string
     chatMessages: Table[WebSocket, string]
-    actionMessages: Table[WebSocket, seq[string]]
-    nextDecisionId: int
+    actionMessages: Table[WebSocket, seq[PrivatePlayerMessage]]
     playerIndices: Table[WebSocket, int]
     playerAddresses: Table[WebSocket, string]
     playerSlots: Table[WebSocket, int]
@@ -70,10 +75,12 @@ type
     nextAnonymousPlayer: int
     config: GameConfig
 
-  ServerThreadArgs = object
+  GameThreadArgs = object
     server: ptr Server
-    address: string
-    port: int
+    initialConfig: GameConfig
+    saveReplayPath, loadReplayPath, saveScoresPath: string
+    runtimeConfig: RuntimeConfig
+    episodeStart: MonoTime
 
 const
   HealthPath = "/healthz"
@@ -104,8 +111,8 @@ var replayBytesForClients {.threadvar.}: string
 proc initAppState() =
   initLock(appState.lock)
   appState.chatMessages = initTable[WebSocket, string]()
-  appState.actionMessages = initTable[WebSocket, seq[string]]()
-  appState.nextDecisionId = 0
+  appState.authenticatedPlayers = initTable[WebSocket, int]()
+  appState.actionMessages = initTable[WebSocket, seq[PrivatePlayerMessage]]()
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerAddresses = initTable[WebSocket, string]()
   appState.playerSlots = initTable[WebSocket, int]()
@@ -228,12 +235,16 @@ proc httpHandler(request: Request) =
     {.gcsafe.}:
       withLock appState.lock:
         let error = appState.config.joinError(identity, slot, token)
-        if error.len > 0:
-          request.respondForbiddenWebSocket(error)
+        if error.len > 0 or appState.started or appState.stopping or appState.sealed:
+          request.respondForbiddenWebSocket("player admission is closed or invalid")
           return
-    let websocket = request.upgradeToWebSocket()
-    {.gcsafe.}:
-      withLock appState.lock:
+        for live, liveSlot in appState.authenticatedPlayers:
+          if slot >= 0 and liveSlot == slot and live in appState.playerViewers and
+              live notin appState.closedSockets:
+            request.respondForbiddenWebSocket("player seat is already connected")
+            return
+        let websocket = request.upgradeToWebSocket()
+        appState.authenticatedPlayers[websocket] = slot
         appState.globalViewers.del(websocket)
         appState.playerViewers[websocket] = initPlayerViewerState()
         appState.playerAddresses[websocket] = identity
@@ -304,7 +315,8 @@ proc websocketHandler(
           elif websocket in appState.globalViewers:
             appState.globalViewers[websocket].applyGlobalViewerMessage(
               message.data)
-          elif websocket in appState.playerViewers:
+          elif websocket in appState.playerViewers and not appState.started and
+              not appState.stopping and not appState.sealed:
             # EDIT 3: a seat's chat is its registration. Read the raw payload
             # so a non-ASCII policy label survives; the input bits a seat may
             # send are read and dropped (the server computes every mask).
@@ -312,10 +324,12 @@ proc websocketHandler(
             if text.len > 0:
               appState.chatMessages[websocket] = text
     elif message.kind == TextMessage:
+      let receivedAt = getMonoTime()
       {.gcsafe.}:
         withLock appState.lock:
-          if websocket in appState.playerViewers:
-            appState.actionMessages.mgetOrPut(websocket, @[]).add(message.data)
+          if websocket in appState.authenticatedPlayers and not appState.sealed:
+            appState.actionMessages.mgetOrPut(websocket, @[]).add(
+              PrivatePlayerMessage(data: message.data, receivedAt: receivedAt))
   of ErrorEvent, CloseEvent:
     var who = ""
     {.gcsafe.}:
@@ -325,9 +339,6 @@ proc websocketHandler(
           who = appState.playerAddresses[websocket]
     if who.len > 0:
       echo "player disconnected: ", who
-
-proc serverThreadProc(args: ServerThreadArgs) {.thread.} =
-  args.server[].serve(Port(args.port), args.address)
 
 type FrameAdvance = enum
   LateFrame, SkippedFrame, WaitedFrame
@@ -371,20 +382,12 @@ proc runFrameLimiter(
     slept = true
   previousTick = getMonoTime()
 
-proc declarePlayerFailure*(slot: int, message: string) =
-  ## Publishes the game-declared terminal player failure the platform runner
-  ## polls for, so a lobby no-show is charged to the seat that caused it
-  ## instead of poisoning the whole episode unattributed. Best-effort.
-  ## Exported so tests/test_engine.nim can drive it against a real
-  ## file:// target and assert the JSON shape the runner polls for.
-  try:
-    writeCogameEnv(
-      "COGAME_PLAYER_FAILURE_URI",
-      $(%*{"failed_policy_index": slot, "message": message}),
-      "application/json"
-    )
-  except CatchableError as e:
-    echo "player-failure declaration failed: ", e.msg
+proc declarePlayerFailure*(slot: int, message: string, deadline: MonoTime) =
+  ## The platform polls this source-owned no-show declaration.
+  let uri = getEnv("COGAME_PLAYER_FAILURE_URI")
+  if uri.len > 0:
+    writeCogameArtifact(uri, $(%*{"failed_policy_index": slot, "message": message}),
+      "application/json", "COGAME_PLAYER_FAILURE_URI", deadline)
 
 proc parseRegistration*(text: string): tuple[ok: bool, node: JsonNode] =
   try:
@@ -415,6 +418,9 @@ proc registrationOf*(
   let scripted = parsed.node{"scripted"}
   let label = clipRunes(parsed.node{"policy"}.getStr(), MaxPolicyRunes)
   if kind in ["prompt", "external"]:
+    if parsed.node["prompt"].kind != JString or parsed.node["prompt"].getStr().len > 4000:
+      return (false, previous, "")
+    policy.operatorPrompt = parsed.node["prompt"].getStr()
     policy.kind = pkLlm
     policy.baseline = ""
   else:
@@ -430,7 +436,8 @@ proc registrationOf*(
     previous.connected and
     previous.kind == policy.kind and
     previous.baseline == policy.baseline and
-    previous.label == policy.label
+    previous.label == policy.label and
+    previous.operatorPrompt == policy.operatorPrompt
   if unchanged:
     return (true, policy, "")
   (true, policy, $(%*{
@@ -442,104 +449,168 @@ proc registrationOf*(
     "baseline": policy.baseline
   }))
 
+type
+  PrivateFrameKind = enum
+    pfIgnored, pfStarted, pfAction, pfStopped, pfRejected
+  PrivateFrame = object
+    kind: PrivateFrameKind
+    payload: JsonNode
+
+proc takeMessages(socket: WebSocket): seq[PrivatePlayerMessage] {.gcsafe.} =
+  {.gcsafe.}:
+    withLock appState.lock:
+      if appState.actionMessages.hasKey(socket):
+        result = appState.actionMessages[socket]
+        appState.actionMessages.del(socket)
+
+proc consumePrivateFrame(exchange: NativeExchange, socket: WebSocket,
+    received: PrivatePlayerMessage, current: Option[IssuedOperation]): PrivateFrame =
+  result.payload = newJNull()
+  var answer = newJNull()
+  try:
+    answer = parseJson(received.data)
+    let kind = answer["type"].getStr()
+    if kind == "stopped":
+      if answer["attempts"].kind != JArray or
+          answer["worker_status"].getStr() notin ["joined", "no_active_call"] or
+          answer["decision_id"].kind notin {JString, JNull} or
+          answer["stop_id"].kind notin {JString, JNull}:
+        raise newException(CogballError, "invalid native reader acknowledgement")
+      for payload in answer["attempts"]:
+        let attemptId = payload["attempt_id"].getStr()
+        var matched = false
+        for issued in exchange.operations:
+          if issued.socket == socket and attemptId == issued.id & "-" & $ord(issued.seat):
+            discard exchange.retainAttempt(socket, issued.id, payload, received.receivedAt, nesReceived)
+            matched = true
+            break
+        if not matched:
+          raise newException(CogballError, "acknowledgement includes an unissued attempt")
+      result.kind = pfStopped
+      result.payload = answer
+      return
+    if kind notin ["action", "attempt_started"]: return
+    let id = answer["decision_id"].getStr()
+    let issued = exchange.operation(socket, id)
+    if answer.hasKey("training_attempt") and answer["training_attempt"].kind != JNull:
+      discard exchange.retainAttempt(socket, id, answer["training_attempt"], received.receivedAt,
+        if kind == "attempt_started": nesStarted else: nesReceived)
+    if kind == "attempt_started":
+      result.kind = pfStarted
+      return
+    if current.isNone or issued != current.get() or
+        received.receivedAt < issued.issuedAt or received.receivedAt > issued.deadline:
+      return
+    if answer.hasKey("action") and answer["action"].kind == JObject and issued.evidence.isSome:
+      issued.validateModelAction()
+    result.kind = pfAction
+    result.payload = answer
+  except CatchableError:
+    # The existing private parse boundary never attributes stale controls to a new action.
+    if current.isSome and answer.kind == JObject and answer.hasKey("type") and
+        answer["type"] == %"action" and answer.hasKey("decision_id") and
+        answer["decision_id"] == %current.get().id and
+        received.receivedAt >= current.get().issuedAt and received.receivedAt <= current.get().deadline:
+      result.kind = pfRejected
+
+proc confirmEvidenceReceipt(socket: WebSocket, payload: JsonNode) =
+  var live: bool
+  {.gcsafe.}:
+    withLock appState.lock:
+      live = socket in appState.playerViewers and socket notin appState.closedSockets
+  if live:
+    socket.send($(%*{"type": "evidence_received", "decision_id": payload["decision_id"],
+      "stop_id": payload["stop_id"]}), TextMessage)
+
 proc playerBatch(
   seatSockets: array[Seat, WebSocket],
-  seatConnected: array[Seat, bool]
+  seatConnected: array[Seat, bool], exchange: NativeExchange,
+  publishWaitingFrame: proc() {.closure, gcsafe.}
 ): BatchFn =
-  ## All seats see one frozen turn before any player reply is awaited.
-  result = proc(calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+  result = proc(calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
       {.closure, gcsafe.} =
     result = newSeq[BatchReply](calls.len)
-    var requestId: int
-    {.gcsafe.}:
-      withLock appState.lock:
-        inc appState.nextDecisionId
-        requestId = appState.nextDecisionId
-        for call in calls:
-          let socket = seatSockets[Seat(call.seat)]
-          if seatConnected[Seat(call.seat)]:
-            appState.actionMessages.del(socket)
+    var issuedCalls: seq[IssuedOperation]
     for position, call in calls:
-      result[position].seat = call.seat
       let socket = seatSockets[Seat(call.seat)]
+      let issued = exchange.issue(socket, Seat(call.seat), call, deadline)
+      issuedCalls.add(issued)
+      result[position].seat = call.seat
+      result[position].attemptId = issued.id & "-" & $call.seat
       if not seatConnected[Seat(call.seat)]:
         result[position].error = "player disconnected"
         continue
-      try:
-        socket.send($( %*{
-          "type": "decision", "id": requestId, "seat": call.seat,
-          "view": parseJson(call.user), "system": call.system,
-          "timeout_seconds": timeoutSeconds
-        }), TextMessage)
-      except CatchableError as failure:
-        result[position].error = failure.msg
-
-    let deadline = getMonoTime() + initDuration(seconds = timeoutSeconds)
-    while getMonoTime() < deadline:
+      socket.send($( %*{"type": "decision", "decision_id": issued.id,
+        "seat": call.seat, "observation": call.observation,
+        "messages": [{"role": "system", "content": call.system},
+          {"role": "user", "content": call.user}],
+        "transport": {"budget_ms": max(0'i64, (deadline - getMonoTime()).inMilliseconds),
+          "cleanup_budget_ms": 5000, "max_output_tokens": call.maxOutputTokens}}), TextMessage)
+    var nextWaitingFrame = getMonoTime()
+    while not interruptionRequested() and getMonoTime() < deadline:
+      if getMonoTime() >= nextWaitingFrame:
+        publishWaitingFrame()
+        nextWaitingFrame = getMonoTime() + initDuration(milliseconds = 100)
       var pending = false
-      for position, call in calls:
-        if result[position].ok or result[position].error.len > 0:
-          continue
-        let socket = seatSockets[Seat(call.seat)]
-        var messages: seq[string]
-        {.gcsafe.}:
-          withLock appState.lock:
-            if appState.actionMessages.hasKey(socket):
-              messages = appState.actionMessages[socket]
-              appState.actionMessages.del(socket)
-        for raw in messages:
-          if result[position].ok or result[position].error.len > 0: break
-          try:
-            let answer = parseJson(raw)
-            if answer{"id"}.getInt() != requestId: continue
-            let kind = answer{"type"}.getStr()
-            if kind notin ["action", "attempt_started"]: continue
-            if answer.hasKey("training_attempt") and answer["training_attempt"].kind != JNull:
-              var evidence = readAttemptEvidence(answer["training_attempt"])
-              if evidence.origin in {aoTeacher, aoHuman}: evidence.origin = aoUnknown
-              if result[position].evidence.isSome:
-                let started = result[position].evidence.get()
-                if kind == "attempt_started" or evidence.prompt != started.prompt or evidence.request != started.request:
-                  raise newException(CogballError, "attempt evidence changed its started request")
-              result[position].evidence = some(evidence)
-            if kind == "attempt_started": continue
-            if answer.hasKey("action") and answer["action"].kind == JObject:
+      for position, issued in issuedCalls:
+        if result[position].ok or result[position].error.len > 0: continue
+        for received in takeMessages(issued.socket):
+          let frame = consumePrivateFrame(exchange, issued.socket, received, some(issued))
+          result[position].evidence = issued.evidence
+          case frame.kind
+          of pfAction:
+            if frame.payload.hasKey("action") and frame.payload["action"].kind == JObject:
               result[position].ok = true
-              result[position].text = $answer["action"]
+              result[position].text = $frame.payload["action"]
             else:
-              result[position].error = answer{"error"}.getStr("player fallback")
-              let cause = answer{"cause"}.getStr()
-              result[position].cause =
-                if cause in ["no_credentials", "timeout", "parse_error"]:
-                  cause
-                else:
-                  "transport_error"
-          except CatchableError:
-            result[position].error = "invalid player response"
-        if not result[position].ok and result[position].error.len == 0:
-          pending = true
-      if not pending:
-        break
+              result[position].error = "model attempt failed"
+              let cause = frame.payload{"cause"}.getStr()
+              result[position].cause = if cause in ["no_credentials", "timeout", "parse_error"]:
+                cause else: "transport_error"
+          of pfStopped:
+            confirmEvidenceReceipt(issued.socket, frame.payload)
+            if frame.payload["decision_id"] == %issued.id:
+              result[position].error = "player stopped before action"
+          of pfRejected: result[position].error = "invalid player response"
+          else: discard
+        if not result[position].ok and result[position].error.len == 0: pending = true
+      if not pending: break
       sleep(10)
-    for reply in result.mitems:
-      if not reply.ok and reply.error.len == 0:
-        reply.error = "Timeout was reached"
+    for position, reply in result.mpairs:
+      reply.evidence = issuedCalls[position].evidence
+      if not reply.ok and reply.error.len == 0: reply.error = "Timeout was reached"
 
-proc runServerLoop*(
-  host = DefaultHost,
-  port = DefaultPort,
+proc writeInitializationCheckpoint*(config: GameConfig, status: EpisodeStatus) =
+  doAssert status in {esFailed, esTruncated}
+  let uri = getEnv(CogameSaveTrajectoryUriEnv)
+  if uri.len == 0: return
+  requestNativeStop()
+  let deadline = getMonoTime() + initDuration(milliseconds = 5000)
+  let trajectory = newDecisionTrajectory(getEnv("COWORLD_EPISODE_ID"),
+    "cogball-" & $config.seed, "cogball", getEnv("COWORLD_GAME_VERSION"),
+    getEnv("COWORLD_SOURCE_REVISION"))
+  trajectory.finish(status, %*{"reason": "runtime_initialization",
+    "engine_version": GameVersion}, newJNull())
+  let methodName = getEnv("COGAME_SAVE_TRAJECTORY_METHOD", "PUT")
+  let methodValue = case methodName
+    of "PUT": ahPut
+    of "POST": ahPost
+    else: raise newException(ValueError, "trajectory method must be PUT or POST")
+  trajectory.writeTrajectoryArtifact(uri, deadline, methodValue)
+
+proc runGameLoop(
+  httpServer: Server,
+  episodeStart: MonoTime,
   initialConfig = defaultGameConfig(),
   saveReplayPath = "",
   loadReplayPath = "",
   saveScoresPath = "",
   runtimeConfig = RuntimeConfig()
 ) =
-  initAppState()
-  # The wall-clock budget starts HERE, before the board bake and before the
-  # listener opens, so every second the process spends is charged against the
-  # 690 s engine stop and the 720 s settle requirement -- not just the seconds
-  # after setup finished.
-  let episodeStart = getMonoTime()
+  var ownerReady = false
+  defer:
+    if not ownerReady:
+      initialConfig.writeInitializationCheckpoint(if interruptionRequested(): esTruncated else: esFailed)
   if saveReplayPath.len > 0 and loadReplayPath.len > 0:
     raise newException(ReplayError, "Cannot save and load a replay together")
   var replayLoaded = loadReplayPath.len > 0
@@ -564,9 +635,10 @@ proc runServerLoop*(
       if replayLoaded: move(initializedReplay.player) else: ReplayPlayer()
   defer:
     replayWriter.closeReplayWriter()
-  appState.replayLoaded = replayLoaded
-  appState.replayServerMode = replayLoaded
-  appState.config = config
+  withLock appState.lock:
+    appState.replayLoaded = replayLoaded
+    appState.replayServerMode = replayLoaded
+    appState.config = config
 
   let eventsPath = block:
     let uri = getEnv("COGAME_EVENTS_URI")
@@ -574,7 +646,7 @@ proc runServerLoop*(
     elif uri.startsWith("file://"): uri[7 .. ^1]
     else:
       raise newException(ValueError,
-        "COGAME_EVENTS_URI must be a file:// path, got: " & uri)
+        "COGAME_EVENTS_URI must use a file:// path")
 
   var
     sim =
@@ -585,10 +657,9 @@ proc runServerLoop*(
   replayWriter.lastMasks = newSeq[uint8](RobotCount)
 
   block:
-    # Bake the board render caches BEFORE the listener opens: a viewer's
-    # first-message clock starts at its successful connect, so nothing may be
-    # accepted until every frame the loop will build can be assembled
-    # instantly.
+    # The game owner bakes rendering before publishing its first frame.
+    # Listener readiness starts the viewer deadline; the real runtime gate
+    # verifies this initialization and first canonical frame together.
     let warmStart = getMonoTime()
     sim.warmBoardRenderCaches()
     echo "board render caches baked in ",
@@ -596,6 +667,7 @@ proc runServerLoop*(
       " ms (charged against wallClockBudgetSeconds=",
       config.wallClockBudgetSeconds, ")"
 
+  let exchange = newNativeExchange()
   var engine = newTurnEngine(nil)
   for seat in Seat:
     engine.policies[seat] = SeatPolicy(
@@ -607,14 +679,6 @@ proc runServerLoop*(
       getEnv("COWORLD_GAME_VERSION"), getEnv("COWORLD_SOURCE_REVISION"), config.seed))
     else: none(MatchCapture)
 
-  let httpServer = newServer(httpHandler, websocketHandler, workerThreads = 4)
-  var
-    serverThread: Thread[ServerThreadArgs]
-    serverPtr = cast[ptr Server](unsafeAddr httpServer)
-  createThread(serverThread, serverThreadProc,
-    ServerThreadArgs(server: serverPtr, address: host, port: port))
-  httpServer.waitUntilReady()
-
   var
     prevInputs = newSeq[InputState](RobotCount)
     liveSpeedIndex = 0
@@ -623,6 +687,7 @@ proc runServerLoop*(
       else: initBroadcastTracker()
     quitAfterFrame = false
     failureDeclared = false
+    episodeDeadlineReached = false
     lastGoalsSeen: array[Seat, int32]
     resultRecordWritten = false
 
@@ -637,41 +702,149 @@ proc runServerLoop*(
     replayWriter.writeChat(tickTime(sim.tickCount), 0, record)
     sim.applyRecord(record)
 
-  proc writeArtifacts() =
-    ## Closes the replay and publishes every artifact the runner reads. Called
-    ## on the normal exit AND from the host-error handler, which is what makes
-    ## `fault/host_error` a real ending rather than a declared one: the note
-    ## promises best-effort artifacts before re-raising.
+  proc publishGlobalFrame(frameEvents: JsonNode) =
+    var globalViewers: seq[WebSocket]
+    var globalStates: seq[GlobalViewerState]
+    {.gcsafe.}:
+      withLock appState.lock:
+        for websocket, state in appState.globalViewers.pairs:
+          globalViewers.add(websocket)
+          var snapshot = state
+          # Commands stay queued in appState until the owner applies them.
+          # Packet construction must not duplicate them during a frozen wait.
+          snapshot.replayCommands = @[]
+          snapshot.replaySeekTick = -1
+          globalStates.add(snapshot)
+    for i in 0 ..< globalViewers.len:
+      var nextState: GlobalViewerState
+      var packet =
+        if replayLoaded:
+          sim.buildReplayViewerPacket(
+            replayPlayer, globalStates[i], nextState, frameEvents)
+        else:
+          sim.buildSpriteProtocolUpdates(
+            globalStates[i], nextState, sim.tickCount, true,
+            playbackSpeed(liveSpeedIndex), config.maxTicks, false, false, -1)
+      if not replayLoaded:
+        # The chrome channel rides the SAME binary sprite stream as the board,
+        # as the label of a reserved never-drawn 1x1 sprite, because that is
+        # the only channel that survives a hosted replay.
+        packet.addSprite(BroadcastChromeSpriteId, 1, 1, [0'u8, 0, 0, 0],
+          sim.buildStateJson(frameEvents, true,
+            float(playbackSpeed(liveSpeedIndex)), config.maxTicks, false,
+            false, -1,
+            -1, @[], 0, 0, false, false, false, @[], nil))
+      if packet.len == 0:
+        continue
+      try:
+        for chunk in chunkSpritePacket(packet, MaxWsFrameBytes):
+          globalViewers[i].send(blobFromBytes(chunk), BinaryMessage)
+        {.gcsafe.}:
+          withLock appState.lock:
+            if globalViewers[i] in appState.globalViewers:
+              let pending = appState.globalViewers[globalViewers[i]]
+              var merged = nextState
+              merged.mouseX = pending.mouseX
+              merged.mouseY = pending.mouseY
+              merged.mouseLayer = pending.mouseLayer
+              merged.mouseDown = pending.mouseDown
+              if pending.clickPending:
+                merged.clickPending = true
+              if pending.replaySeekTick >= 0:
+                merged.replaySeekTick = pending.replaySeekTick
+              if pending.replayCommands.len > 0:
+                merged.replayCommands.add(pending.replayCommands)
+              appState.globalViewers[globalViewers[i]] = merged
+      except:
+        {.gcsafe.}:
+          withLock appState.lock:
+            discard markSocketClosed(globalViewers[i])
+
+  var finalizationStarted = false
+  proc writeArtifacts(requestedStatus: EpisodeStatus) =
+    # Mark the seal before any operation that can fail; never retry a partial seal.
+    finalizationStarted = true
+    let cleanupDeadline = getMonoTime() + initDuration(milliseconds = 5000)
+    let acknowledgementDeadline = cleanupDeadline - initDuration(milliseconds = 1000)
+    let issuedStopAt = getMonoTime()
+    var stopId: string
+    for value in urandom(16): stopId.add(toHex(value, 2).toLowerAscii())
+    withLock appState.lock:
+      appState.stopping = true
+      for socket, slot in appState.authenticatedPlayers: exchange.targets[socket] = slot
+    requestNativeStop()
+    for socket, slot in exchange.targets:
+      var live: bool
+      withLock appState.lock:
+        live = socket in appState.playerViewers and socket notin appState.closedSockets
+      if live:
+        socket.send($(%*{"type": "stop", "decision_id":
+          (if exchange.latest.hasKey(socket): %exchange.latest[socket] else: newJNull()),
+          "stop_id": stopId,
+          "cleanup_budget_ms": max(0'i64, (acknowledgementDeadline - getMonoTime()).inMilliseconds)}), TextMessage)
+    var acknowledged = initHashSet[WebSocket]()
+    while getMonoTime() < acknowledgementDeadline:
+      for socket, slot in exchange.targets:
+        for received in takeMessages(socket):
+          let frame = consumePrivateFrame(exchange, socket, received, none(IssuedOperation))
+          if frame.kind != pfStopped: continue
+          # Retain genuine older-operation facts before checking current stop credit.
+          confirmEvidenceReceipt(socket, frame.payload)
+          let latest = if exchange.latest.hasKey(socket): %exchange.latest[socket] else: newJNull()
+          if received.receivedAt < issuedStopAt or received.receivedAt > acknowledgementDeadline or
+              frame.payload["stop_id"] != %stopId or frame.payload["decision_id"] != latest:
+            continue
+          var allReadersJoined = true
+          for issued in exchange.operations:
+            if issued.socket == socket and issued.started and
+                (issued.evidence.isNone or issued.evidence.get().responseReaderJoined != some(true)):
+              allReadersJoined = false
+          if allReadersJoined: acknowledged.incl(socket)
+      if acknowledged.len == exchange.targets.len: break
+      sleep(10)
+    var cleanup = newJArray()
+    for socket, slot in exchange.targets:
+      cleanup.add(%*{"seat": slot,
+        "decision_id": (if exchange.latest.hasKey(socket): %exchange.latest[socket] else: newJNull()),
+        "status": (if socket in acknowledged: "acknowledged" else: "unresolved")})
+    var status = requestedStatus
+    if status == esCompleted and acknowledged.len != exchange.targets.len: status = esTruncated
+    withLock appState.lock: appState.sealed = true
     replayWriter.closeReplayWriter()
     if capture.isSome:
-      capture.get().finishMatch(sim)
-      capture.get().trajectory.writeEventsToUri(trajectoryUri)
-    if saveReplayPath.len > 0 and fileExists(saveReplayPath):
-      echo "Replay written: ", saveReplayPath,
-        " (", getFileSize(saveReplayPath), " bytes)"
-      runtimeConfig.writeReplay(readFile(saveReplayPath))
+      capture.get().finishMatch(sim, status, cleanup, exchange.finalAttempts())
+      let methodName = getEnv("COGAME_SAVE_TRAJECTORY_METHOD", "PUT")
+      let methodValue = case methodName
+        of "PUT": ahPut
+        of "POST": ahPost
+        else: raise newException(ValueError, "trajectory method must be PUT or POST")
+      capture.get().trajectory.writeTrajectoryArtifact(trajectoryUri, cleanupDeadline, methodValue)
+    if status != esCompleted: return
+    if runtimeConfig.replayUri.len > 0:
+      writeCogameArtifact(runtimeConfig.replayUri, readFile(saveReplayPath),
+        "application/octet-stream", CogameSaveReplayUriEnv, cleanupDeadline)
     if eventsPath.len > 0:
-      writeFile(eventsPath, collectedEvents.eventsJsonl(sim.tickCount))
-      echo "Events written: ", eventsPath, " (", collectedEvents.len,
-        " events)"
+      writeCogameArtifact("file://" & eventsPath, collectedEvents.eventsJsonl(sim.tickCount),
+        "application/x-ndjson", "COGAME_EVENTS_URI", cleanupDeadline)
     if runtimeConfig.resultsUri.len > 0:
-      runtimeConfig.writeResults(sim.playerResultsJson() & "\n")
+      writeCogameArtifact(runtimeConfig.resultsUri, sim.playerResultsJson() & "\n",
+        "application/json", CogameResultsUriEnv, cleanupDeadline)
     elif saveScoresPath.len > 0:
-      writeFile(saveScoresPath, sim.playerResultsJson() & "\n")
+      writeCogameArtifact("file://" & saveScoresPath, sim.playerResultsJson() & "\n",
+        "application/json", CogameResultsUriEnv, cleanupDeadline)
     echo "Results: ", sim.playerResultsJson()
 
-  proc stopServing() =
-    httpServer.close()
-    joinThread(serverThread)
-
+  ownerReady = true
   try:
-    while true:
+    while not interruptionRequested():
+      if not replayLoaded and getMonoTime() >= episodeStart + initDuration(seconds = config.wallClockBudgetSeconds):
+        episodeDeadlineReached = true
+        sim.wallClockStop()
+        break
       var
         sockets: seq[WebSocket] = @[]
         playerIndices: seq[int] = @[]
         playerViewerStates: seq[PlayerViewerState] = @[]
-        globalViewers: seq[WebSocket] = @[]
-        globalStates: seq[GlobalViewerState] = @[]
         replayCommands: seq[char] = @[]
         replaySeekTicks: seq[int] = @[]
         registrations: seq[tuple[seat: int, text: string]] = @[]
@@ -695,9 +868,11 @@ proc runServerLoop*(
             appState.playerTokens.del(websocket)
             appState.playerReady.del(websocket)
             appState.chatMessages.del(websocket)
-            appState.actionMessages.del(websocket)
             appState.globalViewers.del(websocket)
+          # Authenticated socket bindings survive close ordering until the private seal.
           appState.closedSockets.setLen(0)
+          for websocket, seat in appState.authenticatedPlayers:
+            exchange.targets[websocket] = seat
 
           if not replayLoaded:
             # Joins are strictly slot-sequential.
@@ -721,6 +896,7 @@ proc runServerLoop*(
                 try:
                   let index = sim.addPlayer(address, resolved, token)
                   appState.playerIndices[websocket] = index
+                  appState.authenticatedPlayers[websocket] = ord(sim.players[index].seat)
                   replayWriter.writeJoin(tickTime(sim.tickCount), index,
                     address, resolved, token)
                   progressed = true
@@ -743,8 +919,6 @@ proc runServerLoop*(
               appState.chatMessages.del(websocket)
 
           for websocket, state in appState.globalViewers.pairs:
-            globalViewers.add(websocket)
-            globalStates.add(state)
             if state.replaySeekTick >= 0:
               replaySeekTicks.add(state.replaySeekTick)
             for command in state.replayCommands:
@@ -756,6 +930,7 @@ proc runServerLoop*(
       # chat stream. `registrationOf` returns the redacted `register` record
       # instead, and returns nothing at all for any other chat text.
       for entry in registrations:
+        if sim.phase != Lobby: break
         let seat = Seat(entry.seat and 1)
         let reg = registrationOf(entry.text, seat, engine.policies[seat])
         if not reg.ok:
@@ -780,7 +955,9 @@ proc runServerLoop*(
         declarePlayerFailure(stuck,
           "player slot " & $stuck & " never joined the lobby within " &
             $config.lobbyJoinTimeoutTicks & " lobby ticks (~" &
-            $(config.lobbyJoinTimeoutTicks div TargetFps) & "s)")
+            $(config.lobbyJoinTimeoutTicks div TargetFps) & "s)",
+          min(episodeStart + initDuration(seconds = config.wallClockBudgetSeconds),
+            getMonoTime() + initDuration(milliseconds = 5000)))
         echo "cogball: lobby join timeout on slot ", stuck,
           "; starting with the scripted baseline in that seat"
         sim.startGame()
@@ -822,18 +999,37 @@ proc runServerLoop*(
                   let seat = sim.players[index].seat
                   seatSockets[seat] = sockets[i]
                   seatConnected[seat] = true
-              engine.batch = playerBatch(seatSockets, seatConnected)
+              engine.batch = playerBatch(seatSockets, seatConnected, exchange,
+                proc() {.closure, gcsafe.} =
+                  {.cast(gcsafe).}: publishGlobalFrame(newJArray()))
               engine.turn(sim, elapsedTicks div sim.turnTicks(), seconds)
               if capture.isSome: capture.get().beginTurn(engine, sim)
+              if interruptionRequested(): break
               for record in engine.records:
                 recordAndWrite(record)
+          if interruptionRequested(): break
+          # Connected seats register before the lobby countdown can start play.
+          # The existing lobby allowance bounds a silent connected player too.
+          if sim.phase == Lobby:
+            var awaitingRegistration = false
+            for player in sim.players:
+              if not player.registered: awaitingRegistration = true
+            if awaitingRegistration and getMonoTime() < episodeStart +
+                initDuration(milliseconds = config.lobbyJoinTimeoutTicks * 1000 div TargetFps):
+              break
           # EDIT 1: the input source is the control layer, not the socket.
           let masks = sim.compileMasks(sim.activeDirective)
           replayWriter.writeInputFrameMasks(tickTime(sim.tickCount), masks)
           var inputs = newSeq[InputState](RobotCount)
           for i in 0 ..< RobotCount:
             inputs[i] = decodeInputMask(masks[i])
-          sim.step(inputs, prevInputs)
+          if sim.phase == Lobby:
+            {.gcsafe.}:
+              withLock appState.lock:
+                sim.step(inputs, prevInputs)
+                if sim.phase != Lobby: appState.started = true
+          else:
+            sim.step(inputs, prevInputs)
           if capture.isSome: capture.get().recordTick(masks, sim)
           prevInputs = inputs
           replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
@@ -876,78 +1072,63 @@ proc runServerLoop*(
             withLock appState.lock:
               discard markSocketClosed(sockets[i])
 
-      for i in 0 ..< globalViewers.len:
-        var nextState: GlobalViewerState
-        var packet =
-          if replayLoaded:
-            sim.buildReplayViewerPacket(
-              replayPlayer, globalStates[i], nextState, frameEvents)
-          else:
-            sim.buildSpriteProtocolUpdates(
-              globalStates[i], nextState, sim.tickCount, true,
-              playbackSpeed(liveSpeedIndex), config.maxTicks, false, false, -1)
-        if not replayLoaded:
-          # The chrome channel rides the SAME binary sprite stream as the board,
-          # as the label of a reserved never-drawn 1x1 sprite, because that is
-          # the only channel that survives a hosted replay.
-          packet.addSprite(BroadcastChromeSpriteId, 1, 1, [0'u8, 0, 0, 0],
-            sim.buildStateJson(frameEvents, true,
-              float(playbackSpeed(liveSpeedIndex)), config.maxTicks, false,
-              false, -1,
-              -1, @[], 0, 0, false, false, false, @[], nil))
-        if packet.len == 0:
-          continue
-        try:
-          for chunk in chunkSpritePacket(packet, MaxWsFrameBytes):
-            globalViewers[i].send(blobFromBytes(chunk), BinaryMessage)
-          {.gcsafe.}:
-            withLock appState.lock:
-              if globalViewers[i] in appState.globalViewers:
-                let pending = appState.globalViewers[globalViewers[i]]
-                var merged = nextState
-                merged.mouseX = pending.mouseX
-                merged.mouseY = pending.mouseY
-                merged.mouseLayer = pending.mouseLayer
-                merged.mouseDown = pending.mouseDown
-                if pending.clickPending:
-                  merged.clickPending = true
-                if pending.replaySeekTick >= 0:
-                  merged.replaySeekTick = pending.replaySeekTick
-                if pending.replayCommands.len > 0:
-                  merged.replayCommands.add(pending.replayCommands)
-                appState.globalViewers[globalViewers[i]] = merged
-        except:
-          {.gcsafe.}:
-            withLock appState.lock:
-              discard markSocketClosed(globalViewers[i])
+      publishGlobalFrame(frameEvents)
 
       if quitAfterFrame:
-        writeArtifacts()
-        stopServing()
+        writeArtifacts(case sim.endReason
+          of reasonComplete: esCompleted
+          of reasonDeadline: esTruncated
+          of reasonFault: esFailed)
         break
 
       discard runFrameLimiter(lastTick, not replayLoaded and config.fastMode,
         sockets, playerIndices, sim.players.len)
-  except CatchableError as failure:
-    # fault/host_error. An unexpected exception used to unwind straight out of
-    # `isMainModule` with a traceback and NO results.json, no replay upload and
-    # no events file, which left the runner with an unattributable episode and
-    # made `hostErrorStop` (and the manifest's `host_error` endRule) code that
-    # nothing could reach. Now the verdict is recorded, the artifacts are
-    # written best-effort, and the exception is re-raised unchanged so the exit
-    # status and the traceback still say what happened.
-    echo "cogball: host error: ", failure.msg
-    sim.hostErrorStop()
+  finally:
     try:
-      if not resultRecordWritten:
-        resultRecordWritten = true
-        recordAndWrite(sim.resultRecordJson())
-      writeArtifacts()
-    except CatchableError as artifactFailure:
-      echo "cogball: artifact write after host error failed: ",
-        artifactFailure.msg
-    try:
-      stopServing()
-    except CatchableError:
-      discard
-    raise
+      if not finalizationStarted:
+        writeArtifacts(if interruptionRequested() or episodeDeadlineReached: esTruncated else: esFailed)
+    finally:
+      requestNativeStop()
+      httpServer.close()
+
+proc gameThreadProc(args: GameThreadArgs) {.thread.} =
+  {.cast(gcsafe).}:
+    runGameLoop(args.server[], args.episodeStart, args.initialConfig,
+      args.saveReplayPath, args.loadReplayPath, args.saveScoresPath, args.runtimeConfig)
+
+proc runServerLoop*(
+  host = DefaultHost,
+  port = DefaultPort,
+  initialConfig = defaultGameConfig(),
+  saveReplayPath = "",
+  loadReplayPath = "",
+  saveScoresPath = "",
+  runtimeConfig = RuntimeConfig()
+) =
+  let episodeStart = getMonoTime()
+  installNativeStopHandlers()
+  initAppState()
+  appState.config = initialConfig
+  appState.replayServerMode = loadReplayPath.len > 0
+  var gameStarted = false
+  var startupInterrupted = false
+  defer:
+    if not gameStarted:
+      initialConfig.writeInitializationCheckpoint(if startupInterrupted: esTruncated else: esFailed)
+  let httpServer = newServer(httpHandler, websocketHandler, workerThreads = 4,
+    maxMessageLen = 16 * 1024 * 1024)
+  var gameThread: Thread[GameThreadArgs]
+  let args = GameThreadArgs(server: cast[ptr Server](unsafeAddr httpServer),
+    initialConfig: initialConfig, saveReplayPath: saveReplayPath,
+    loadReplayPath: loadReplayPath, saveScoresPath: saveScoresPath,
+    runtimeConfig: runtimeConfig, episodeStart: episodeStart)
+  proc startGame(server: Server) {.gcsafe, raises: [ResourceExhaustedError].} =
+    createThread(gameThread, gameThreadProc, args)
+    gameStarted = true
+  try:
+    httpServer.serve(Port(port), host, onReady = startGame)
+  finally:
+    startupInterrupted = interruptionRequested()
+    requestNativeStop()
+    if gameStarted:
+      joinThread(gameThread)

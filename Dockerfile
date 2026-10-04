@@ -41,8 +41,8 @@ RUN rm -f nim.cfg && \
   echo '--path:"src"' >> nim.cfg && cat nim.cfg
 
 ARG NimFlags="-d:release -d:useMalloc --opt:speed --stackTrace:on --threads:on --mm:orc"
-RUN nim c $NimFlags --nimcache:/tmp/cogball-nimcache --out:cogball src/cogball.nim && \
-    nim c $NimFlags --nimcache:/tmp/cogball-player-nimcache \
+RUN nim c --parallelBuild:1 $NimFlags --nimcache:/tmp/cogball-nimcache --out:cogball src/cogball.nim && \
+    nim c --parallelBuild:1 $NimFlags --nimcache:/tmp/cogball-player-nimcache \
       --out:cogball-player src/cogball_player.nim
 
 # Run Docker.

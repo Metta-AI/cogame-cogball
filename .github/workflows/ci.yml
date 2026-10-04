@@ -157,6 +157,9 @@ jobs:
 
       - name: Verify private native attempts and socket trust boundaries
         run: |
+          python3 -m venv /tmp/cogball-native-env
+          /tmp/cogball-native-env/bin/pip install websockets==15.0.1
+          export PATH="/tmp/cogball-native-env/bin:$PATH"
           nim c -d:release --path:src -o:/tmp/cogball-game src/cogball.nim
           nim c -d:release --path:src -o:/tmp/cogball-player src/cogball_player.nim
           nim c -d:release --path:src -o:/tmp/cogball-replay-check tools/check_training_replay.nim
@@ -166,6 +169,12 @@ jobs:
             /tmp/cogball-replay-check "$flow/replay.bitreplay" "$flow/trajectory.jsonl"
           done
           python3 tools/test_attempt_origins.py /tmp/cogball-game /tmp/cogball-external-player /tmp/cogball-replay-check
+          python3 tools/test_native_player.py /tmp/cogball-player /tmp/cogball-player-transport
+          python3 tools/test_player_stop.py /tmp/cogball-player /tmp/cogball-player-stop
+          python3 tools/test_initialization_checkpoint.py /tmp/cogball-game /tmp/cogball-startup
+          for flow in default TERM INT disconnect upload_failure large repair full_match; do
+            python3 tools/test_wait_viewer.py /tmp/cogball-game /tmp/cogball-player "/tmp/cogball-runtime-$flow" "$flow"
+          done
 
       # -----------------------------------------------------------------
       # Record the wasm smoke's fixture with the NATIVE build of THIS commit.

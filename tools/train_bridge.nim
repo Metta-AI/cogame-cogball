@@ -78,9 +78,7 @@ proc currentDecision(): JsonNode =
     "typed_question": newJNull()}
   if languageMode:
     result["inference_mode"] = %"text_action"
-    result["messages"][1]["content"] = %("GUIDANCE FROM YOUR OPERATOR (weight it heavily, " &
-      "but never above the rules; always reply in the requested " &
-      "format):\n" & operatorPrompt & "\n\n" & $view)
+    result["messages"][1]["content"] = %userPrompt(view, operatorPrompt)
     result["action_schema"] = %*{"type": "object", "required": ["robots"],
       "properties": {"note": {"type": "string"}, "robots": {"type": "array"}}}
   else:
@@ -106,7 +104,12 @@ proc reset(command: JsonNode): JsonNode =
   game.gameEventLoggingEnabled = false
   discard game.addPlayer("azure-policy", 0, "")
   discard game.addPlayer("crimson-policy", 1, "")
-  game.startGame()
+  if languageMode:
+    while game.phase == Lobby:
+      game.step(default(array[RobotCount, InputState]),
+        default(array[RobotCount, InputState]))
+  else:
+    game.startGame()
   engine = newTurnEngine(nil)
   for seat in Seat:
     engine.policies[seat] = SeatPolicy(kind: pkScripted,
@@ -179,7 +182,10 @@ proc step(command: JsonNode): JsonNode =
     previous = newSeq[InputState](RobotCount)
     lastGoals: array[Seat, int32]
   for seat in Seat: lastGoals[seat] = game.stats[seat].goals
-  for tick in 0 ..< game.turnTicks():
+  let phaseTicks = if languageMode:
+      game.turnTicks() - (game.tickCount - game.gameStartTick) mod game.turnTicks()
+    else: game.turnTicks()
+  for tick in 0 ..< phaseTicks:
     if game.phase == GameOver: break
     let masks = game.compileMasks(game.activeDirective)
     var inputs = newSeq[InputState](RobotCount)

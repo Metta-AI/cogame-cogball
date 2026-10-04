@@ -21,7 +21,7 @@ The game container reads and writes the standard `COGAME_*` URIs:
 | `COWORLD_EPISODE_ID`, `COWORLD_GAME_VERSION`, `COWORLD_SOURCE_REVISION` | required immutable identity when private capture is enabled |
 | `COGAME_EVENTS_URI` | the tier-2 JSON-lines analysis stream (`file://` only) |
 | `COGAME_HOST` / `COGAME_PORT` | the bind address (default `0.0.0.0:8080`) |
-| player model credentials | supplied only to the selected player policy container |
+| `COWORLD_LLM_ENDPOINT`, `COWORLD_LLM_MODEL` | selected player native sidecar and requested model |
 
 ## Routes
 
@@ -61,6 +61,7 @@ then the raw payload) carrying:
 ```json
 {"type":"register",
  "kind":"prompt"|"external"|"scripted",
+ "prompt":"<private operator guidance>",
  "scripted":"formation"|"swarm"|null,
  "policy":"<free label>"}
 ```
@@ -83,24 +84,50 @@ Sprite chat text is dropped; decisions use WebSocket text messages.
 
 ### Coaching decisions
 
-At a turn boundary the game sends each external coach a WebSocket text message:
+At a turn boundary the game issues an opaque, nonempty string identity:
 
 ```json
-{"type":"decision","id":1,"seat":0,"system":"<system prompt>",
- "view":{"turn":0},"timeout_seconds":6}
+{"type":"decision","decision_id":"<issued identity>","seat":0,
+ "observation":{"turn":0},
+ "messages":[{"role":"system","content":"<rules>"},
+             {"role":"user","content":"<private guidance and observation>"}],
+ "transport":{"budget_ms":6000,"cleanup_budget_ms":5000,"max_output_tokens":900}}
 ```
 
-Both seats' requests use the same frozen simulation state and are sent before
-the game waits for either reply. A policy responds on that socket with:
+Both seats receive the same frozen simulation state before either response is awaited.
+The native worker honors the engine-issued positive output-token cap.
+The original 9-second turn cap includes the 6-second first attempt and 2.5-second repair.
+Repair receives the remaining time; interruption prevents new request issuance.
+Before a subsequent request, the player joins the previous worker and sends
+uncredited `stopped` evidence. It starts the new worker only after the matching
+`evidence_received`, within the new request's original remaining budget.
+The main reader continues to process terminal stop frames during that handoff.
+Registration freezes when the real lobby transitions to play.
+
+Before starting HTTP, the player sends `attempt_started` with the issued
+`decision_id` and genuinely unobserved `training_attempt` response fields.
+The action uses that identity and its completed native evidence:
 
 ```json
-{"type":"action","id":1,"action":{"note":"...","robots":[...]}}
+{"type":"action","decision_id":"<issued identity>",
+ "action":{"note":"...","robots":[...]},"training_attempt":{}}
 ```
 
-The game checks the request ID, parses and repairs the directive with the
-production parser, and falls back to `formation` after one retry. A player can
-report `{"type":"action","id":1,"cause":"no_credentials",
-"error":"no_credentials"}`. Results, replay and actuator masks stay game-owned.
+The game independently binds the received native body to the normalized completion
+and production-parsed directive. A failed call returns `cause` and private evidence.
+Missing endpoint means unsupervised fallback; credentials never activate inference.
+
+At finalization, every registered player, including disconnected seats, must finish
+its owned readers. The game sends `stop` with the latest `decision_id` (or null),
+a random `stop_id`, and remaining `cleanup_budget_ms`. The player cancels and joins
+its HTTP worker, then sends `stopped` with those identities, `worker_status` of
+`joined` or `no_active_call`, and an `attempts` array of genuine final evidence.
+The game retains late facts before nonce/window checks and returns
+`evidence_received` with the echoed identities. The player waits for that receipt
+before closing. Self-initiated stop may use a null nonce, without acknowledgement credit.
+
+Unresolved cleanup yields private `truncated` status and no normal public result or replay.
+All private and public artifact writes share one absolute cleanup deadline.
 
 `training_attempt` is an optional private Bitworld evidence object; explicit null
 means no supplied evidence. The engine owns inference mode, acceptance, parsed

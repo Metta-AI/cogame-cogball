@@ -29,8 +29,8 @@ RUN rm -f nim.cfg && \
   done && \
   echo '--path:"src"' >> nim.cfg && \
   mkdir -p replay-viewer/dist && \
-  nim c -d:emscripten replay-viewer/cogball_replay.nim && \
-  nim c -r --hints:off -o:/tmp/gen_wire_constants tools/gen_wire_constants.nim \
+  nim c --parallelBuild:1 -d:emscripten replay-viewer/cogball_replay.nim && \
+  nim c --parallelBuild:1 -r --hints:off -o:/tmp/gen_wire_constants tools/gen_wire_constants.nim \
     > replay-viewer/dist/wire_constants.js && \
   cp client/broadcast_core.js replay-viewer/dist/broadcast_core.js && \
   cp client/chrome_common.js replay-viewer/dist/chrome_common.js && \
