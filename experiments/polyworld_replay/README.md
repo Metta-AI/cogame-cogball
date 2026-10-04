@@ -23,7 +23,8 @@ as `--path` flags to every Nim invocation below, plus `--path:src` and
 
 Use one compiler worker and CPU at a time, under the host's resource queue and
 memory guards. The local proof used installed Nim 2.2.10 and Emscripten 5.0.7;
-it does not certify the release image's Nim 2.2.4 / Emscripten 4.0.15 toolchain.
+the separate release-toolchain qualification below uses Nim 2.2.4 and
+Emscripten 4.0.15.
 Keep binaries, caches, traces and frames in a private evidence directory.
 
 1. Compile `proof.nim` with `--skipParentCfg:on -d:release --parallelBuild:1`
@@ -135,29 +136,56 @@ tests the shapes API against Cogball's exact dependencies, not the whole engine
 dependency graph. Reconciling those Shady versions is a blocker for sharing one
 production build configuration. Detailed measurements and images remain private.
 
-## Release-input qualification (2026-10-04)
+## Release-toolchain qualification (2026-10-04)
 
-The documented release configuration is Nim **2.2.4** (`Dockerfile:25`) and
-Emscripten **4.0.15** (`Dockerfile.replay-viewer:4`). Fresh source and retained
-cache inspection found only Nim 2.2.10 and Emscripten 5.0.7 on the proof host.
-The bounded release-input gate exits 78 before compilation; release compilation
-and native/WASM parity under those required versions remain **unqualified**.
-The earlier browser receipt is retained, rather than rerun or relabeled.
+The release recipes pin Nim **2.2.4** (`Dockerfile:25`) and Emscripten
+**4.0.15** (`Dockerfile.replay-viewer:4`). Both exact SDKs were installed from
+official releases into a task-owned Titan prefix, without changing global
+SDK defaults. The earlier missing-tool gate and browser receipt remain retained.
+Executed game source is `3ed3527ced4a177dc0fba5557201cbed2bb2dd66`; the
+fixture and all simulation, codec and replay-runtime source are unchanged.
 
-The dependency mismatch is exact: Cogball's locked Shady
-`c89db58632c5442df16251b3e15cb43c5d52e2a6` exports `glslDesktop` / `glslES3`;
-Polyworld shapes at `449ad184052567c30fa54c269ef45ff8c9e8e29b` require
-`glsl4Desktop` / `glsl3WebGL`. The isolated Shady
-`c899f7cd17dbe7021d6e3aa2908e6de6549c47f1` exports those targets and legacy
-aliases, and is the exact override used in the earlier passing adapter proof.
-That receipt does not establish compatibility under the missing release tools
-or qualify a production lock update. Both dependency locks remain unchanged.
+The qualified experimental dependency cohort is the game's 27 other locked
+packages plus isolated Shady `c899f7cd17dbe7021d6e3aa2908e6de6549c47f1`,
+with Polyworld `449ad184052567c30fa54c269ef45ff8c9e8e29b` as a read-only
+source path. Each dependency source file was hash-checked before compilation.
+Cogball's locked Shady `c89db58632c5442df16251b3e15cb43c5d52e2a6` exports
+`glslDesktop` / `glslES3`; Polyworld shapes require `glsl4Desktop` /
+`glsl3WebGL`. A private compiler probe against that old pin reproduced
+`undeclared identifier: 'glsl4Desktop'`. The isolated override exports the
+required targets and legacy aliases. Both production locks remain unchanged;
+this qualifies the experimental cohort, not a production dependency upgrade.
 
-Resumption requires retained Nim 2.2.4 (including its matching library/config)
-and a complete retained Emscripten 4.0.15 SDK, with identities and a finite
-SDK/scratch byte budget before build admission. At readback the host had only
-132,440,064 bytes free on the shared home/tmp filesystem; source/evidence work
-was admitted with a 1 MiB budget. No release build, dependency installation,
-image download, browser run or shared cleanup was performed. The private
-release result retains the input-gate reproducer, available compiler hashes,
-source bindings and terminal FIFO receipts.
+Native proof and public-export builds used the Dockerfile's release flags:
+`-d:release -d:useMalloc --opt:speed --stackTrace:on --threads:on --mm:orc`,
+plus `--skipParentCfg:on --parallelBuild:1`. The existing WASM viewer retained
+its ARC/thread-off configuration. Actual Nim 2.2.4 / Emscripten 4.0.15 builds
+and execution passed all 1,353 native/WASM state comparisons, ten seeks,
+300 existing-viewer frame/packet checks, private-sentinel exclusion, corrupted
+recorded-hash rejection and an adversarial comparator mismatch. Public export
+matched all 1,353 states, removed 23 strategy records, and exported zero chats.
+The actual Polyworld WebGL2 browser entry also compiled under those SDKs.
+Its prior browser execution receipt is reused; no new browser execution occurred.
+
+Setup took 459.587 seconds including the first download attempt and staging;
+the complete release gate took 301.170 seconds including correction of a private
+probe filename rejected by Nim. Both used one CPU, nice 19, a 2 GiB memory
+ceiling and zero swap. Setup peaked at 2,075,693,056 bytes; the release stage
+peaked at 548,978,688 bytes, with no OOM or swap use. The normal host FIFO was
+released. Retained SDKs, downloads, source and scratch total 2,874,105,182 bytes,
+below the 8 GiB ceiling. These are resource receipts, not speedup measurements.
+
+Private evidence and exact commands, SDK/download/compiler/source/fixture and
+compiled JS/WASM/native artifact hashes are retained at
+`titan:/home/relh/.local/state/cogball37-release-toolchain-20261004/evidence`.
+The handoff is `cogball-install-and-release-result.json` in the private
+`2026-10-02/fleet-checkin-20261004-0030` organizer directory. The Nim archive
+hash is an observed identity: its official checksum URL returned 404, so no
+independent published-checksum verification is claimed. The initial failure
+and corrected negative probe are preserved in that evidence.
+
+This closes the bounded release compiler/parity gate. It does not qualify a
+whole production server/container image, hosted integration, production lock
+reconciliation, or browser execution under the new SDKs. The presentation,
+asset/UI and timing limitations above still apply. No migration, deployment,
+shared-engine edit or graphics performance claim follows from these receipts.
