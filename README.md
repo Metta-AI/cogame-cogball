@@ -42,21 +42,24 @@ score(seat) = 0.5 + 0.5 · clamp((goals_you − goals_them) / 3, −1, +1)
 
 ## Playing
 
-One image, two entrypoints, every policy env-switched:
+One image, two entrypoints, every policy env-switched. Coworld supplies each
+policy's authenticated socket URL and each language policy's native sidecar
+endpoint/model. Manual container runs forward those assigned values:
 
 ```bash
 # the game
 docker run --rm -e COGAME_CONFIG_URI=file:///coworld/config.json \
   coworld-cogball:latest /bin/cogball
 
-# a prompt policy; give this player its own model credential
-docker run --rm -e COWORLD_PLAYER_WS_URL=ws://game:8080/player?slot=0 \
+# a prompt policy using its native Coworld sidecar
+docker run --rm -e COWORLD_PLAYER_WS_URL="$COWORLD_PLAYER_WS_URL" \
   -e PLAYER_PROMPT="Play total football: never leave your own goal empty…" \
-  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  -e COWORLD_LLM_ENDPOINT="$COWORLD_LLM_ENDPOINT" \
+  -e COWORLD_LLM_MODEL="$COWORLD_LLM_MODEL" \
   coworld-cogball:latest /bin/cogball-player
 
 # a scripted seat
-docker run --rm -e COWORLD_PLAYER_WS_URL=ws://game:8080/player?slot=1 \
+docker run --rm -e COWORLD_PLAYER_WS_URL="$COWORLD_PLAYER_WS_URL" \
   -e PLAYER_SCRIPTED=formation \
   coworld-cogball:latest /bin/cogball-player
 ```
