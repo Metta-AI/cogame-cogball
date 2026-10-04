@@ -60,5 +60,9 @@ COPY --from=build /workspace/cogball/cogball-player /bin/cogball-player
 COPY --from=build /workspace/cogball/*.json ./
 COPY --from=build /workspace/cogball/data ./data
 COPY --from=build /workspace/cogball/client ./client
+# Public runtime assets must remain readable when the build checkout is private.
+RUN find data client -type d -exec chmod 755 {} + && \
+    find data client -type f -exec chmod 644 {} + && \
+    chmod 644 ./*.json
 
 CMD ["/bin/cogball"]
