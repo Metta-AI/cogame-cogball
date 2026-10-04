@@ -134,3 +134,30 @@ viewer. The engine lock differs from the game's dependency lock: this slice
 tests the shapes API against Cogball's exact dependencies, not the whole engine
 dependency graph. Reconciling those Shady versions is a blocker for sharing one
 production build configuration. Detailed measurements and images remain private.
+
+## Release-input qualification (2026-10-04)
+
+The documented release configuration is Nim **2.2.4** (`Dockerfile:25`) and
+Emscripten **4.0.15** (`Dockerfile.replay-viewer:4`). Fresh source and retained
+cache inspection found only Nim 2.2.10 and Emscripten 5.0.7 on the proof host.
+The bounded release-input gate exits 78 before compilation; release compilation
+and native/WASM parity under those required versions remain **unqualified**.
+The earlier browser receipt is retained, rather than rerun or relabeled.
+
+The dependency mismatch is exact: Cogball's locked Shady
+`c89db58632c5442df16251b3e15cb43c5d52e2a6` exports `glslDesktop` / `glslES3`;
+Polyworld shapes at `449ad184052567c30fa54c269ef45ff8c9e8e29b` require
+`glsl4Desktop` / `glsl3WebGL`. The isolated Shady
+`c899f7cd17dbe7021d6e3aa2908e6de6549c47f1` exports those targets and legacy
+aliases, and is the exact override used in the earlier passing adapter proof.
+That receipt does not establish compatibility under the missing release tools
+or qualify a production lock update. Both dependency locks remain unchanged.
+
+Resumption requires retained Nim 2.2.4 (including its matching library/config)
+and a complete retained Emscripten 4.0.15 SDK, with identities and a finite
+SDK/scratch byte budget before build admission. At readback the host had only
+132,440,064 bytes free on the shared home/tmp filesystem; source/evidence work
+was admitted with a 1 MiB budget. No release build, dependency installation,
+image download, browser run or shared cleanup was performed. The private
+release result retains the input-gate reproducer, available compiler hashes,
+source bindings and terminal FIFO receipts.
