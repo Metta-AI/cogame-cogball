@@ -223,7 +223,7 @@ proc curlyBatch*(client: LlmClient): BatchFn =
       return
     var batch: RequestBatch
     for call in calls:
-      let request = client.requestFor(call.system, call.user)
+      let request = client.requestFor(call.system, call.user, call.seat)
       batch.post(request.url, request.headers, request.body, $call.seat)
     let responses = client.curl.makeRequests(batch, max(1, timeoutSeconds))
     for i, call in calls:
