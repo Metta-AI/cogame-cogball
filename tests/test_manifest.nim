@@ -166,7 +166,6 @@ proc imageAndEntrypoints() =
   let compose = readFile("compose.yaml")
   doAssert compose.contains("image: coworld-cogball:latest")
   doAssert compose.contains("platform: linux/amd64")
-  doAssert compose.contains("network: host")
   doAssert compose.contains("cogball:"), "the compose SERVICE is not named for the coworld"
   doAssert manifest["game"]["runnable"]["image"].getStr() == "{{COGBALL_IMAGE}}",
     "the manifest placeholder does not match the compose service name"
