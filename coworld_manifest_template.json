@@ -9,9 +9,7 @@
       "run": [
         "/bin/cogball"
       ],
-      "env": {
-        "ANTHROPIC_API_KEY_URI": "secret://coworld/cogball/anthropic_api_key"
-      },
+      "env": {},
       "source_url": "https://github.com/Metta-AI/cogame-cogball/tree/main"
     },
     "replay_viewer": {
