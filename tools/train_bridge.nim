@@ -3,7 +3,7 @@
 
 import std/[hashes, json, os]
 import bitworld/spriteprotocol
-import cogball/[baselines, control, decide, directives, roster, sim, llm]
+import cogball/[baselines, control, decide, directives, roster, sim, llm, prompts]
 
 const
   IntentsPerRobot = ord(Intent.high) + 1
@@ -21,6 +21,7 @@ var
   languageMode: bool
   rejectedAttempts: array[Seat, int]
   operatorPrompt: string
+  selection: PromptSelection
 
 proc values(view: JsonNode): JsonNode =
   result = newJArray()
@@ -69,7 +70,7 @@ proc currentDecision(): JsonNode =
     "seat": ord(actingSeat), "engine_seat": ord(actingSeat),
     "turn": game.currentTurn(), "semantic_view": view, "inbox": [],
     "messages": [
-      {"role": "system", "content": SystemPrompt},
+      {"role": "system", "content": selection.systemPrompt()},
       {"role": "user", "content": $view}],
     "speech_messages": [],
     "action_schema": {"type": "object", "properties": {
@@ -77,8 +78,11 @@ proc currentDecision(): JsonNode =
         "maximum": CandidateCount - 1}}, "required": ["choice"]},
     "typed_question": newJNull()}
   if languageMode:
+    result["semantic_view"] = copy(view)
     result["inference_mode"] = %"text_action"
     result["messages"][1]["content"] = %userPrompt(view, operatorPrompt)
+    result["semantic_view"]["prompt_template"] = selection.promptMetadata(
+      result["messages"][0]["content"].getStr(), result["messages"][1]["content"].getStr())
     result["action_schema"] = %*{"type": "object", "required": ["robots"],
       "properties": {"note": {"type": "string"}, "robots": {"type": "array"}}}
   else:
@@ -90,6 +94,15 @@ proc captureViews() =
     views[seat] = engine.seatViewJson(game, seat, turn)
 
 proc reset(command: JsonNode): JsonNode =
+  selection = promptSelection(command)
+  let split = if command.hasKey("split"): command["split"].getStr() else: "train"
+  if split notin ["train", "validation", "test"]:
+    raise newException(ValueError, "split must be train, validation, or test")
+  if selection.selectedVariant in {pvHeldoutBriefing, pvHeldoutReference} and
+      split == "train":
+    raise newException(ValueError, "held-out prompt variants are evaluation-only")
+  if not languageMode and selection.variant != pvCanonical:
+    raise newException(ValueError, "noncanonical prompts require --language")
   doAssert command["players"].getInt() == SeatCount
   let manifest = parseFile(manifestPath)
   var selected = newJNull()
@@ -110,7 +123,7 @@ proc reset(command: JsonNode): JsonNode =
         default(array[RobotCount, InputState]))
   else:
     game.startGame()
-  engine = newTurnEngine(nil)
+  engine = newTurnEngine(selection, nil)
   for seat in Seat:
     engine.policies[seat] = SeatPolicy(kind: pkScripted,
       baseline: "formation", label: "formation", connected: true)
