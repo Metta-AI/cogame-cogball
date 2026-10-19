@@ -34,6 +34,7 @@ for flow in (
             request = json.loads(self.rfile.read(int(self.headers["content-length"])))
             slot = int(self.headers["X-Coworld-Player-Slot"])
             assert self.path == "/v1/messages" and slot in range(2)
+            assert request["system"].startswith("The soccer pitch is fully walled")
             assert request["temperature"] == (1 if flow == "sampled" else 0)
             view = json.loads(request["messages"][0]["content"].split("\n\n", 1)[1])
             action = {
@@ -127,6 +128,7 @@ for flow in (
             reserve.bind(("127.0.0.1", 0))
             port = reserve.getsockname()[1]
         config = {
+            "promptVariant": "mixed", "promptSeed": 4,
             "num_agents": 2,
             "seed": 7,
             "tokens": ["t0", "t1"],

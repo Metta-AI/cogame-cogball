@@ -89,7 +89,8 @@ plus hashes for actual model and teacher attempts after late evidence joins.
 No prompt selector enters simulation state or public replay.
 
 The source exporter accepts `OUTPUT EPISODES FIRST_SEED VARIANT PROMPT_VARIANT
-PROMPT_SEED`. Collect matched seeds in separate output directories for each
+PROMPT_SEED`. Mixed exports advance the prompt seed per game and record each
+selection. Collect matched seeds in separate output directories for each
 wording. Episode IDs include wording; seed-family IDs do not, so the shared
 importer keeps all variants of a scenario in one split. Commit source first.
 Teacher corpora remain candidates requiring external content-bound review.
@@ -99,22 +100,10 @@ matched seeds, seats, opponents, and ordinary match budgets. Report scores,
 invalid replies, fallbacks, and completion rates. Scripted parity verifies
 mechanics; it does not establish better learning or reduced collapse.
 
-Run `python3 tools/test_prompt_variants.py BRIDGE_BINARY` for 48 complete
-language matches across both published variants and two scenario seeds. An
-optional second argument supplies the original bridge for four numeric parity
-comparisons. Checks cover exact prompt hashes, private coach views, actions,
-outcomes, mixed selection, and rejection of held-out training selections.
-
-The complete native panel runs both published match variants with seven direct
-wordings and five mixed selections through actual player binaries:
-
-```sh
-python3 tools/test_prompt_native_games.py GAME PLAYER OUTPUT SOURCE_REVISION REPLAY_CHECK
-```
-
-It uses a bound, non-listening local endpoint and keeps ordinary match budgets.
-Checks cover actual request hashes, private operator/view isolation, both failed
-attempts, consumed fallbacks, reader joins, cleanup acknowledgments, natural
-process exit, and replay verification of every robot mask and tick hash. It
-compares actions, physical execution, and scores with canonical. This local
-closed-endpoint panel does not measure checkpoint quality or hosted admission.
+Run `python3 tools/test_prompt_variants.py BRIDGE_BINARY` for 16 complete
+language matches across both published variants, seven direct wordings and one
+mixed selection. Checks cover exact prompt hashes, private coach views, actions,
+outcomes and rejection of held-out training selections. The existing native
+trajectory fixture now verifies mixed wording on real player requests while
+retaining attempt, fallback and physical execution checks. The duplicate native
+wording panel is removed.

@@ -13,9 +13,9 @@ when isMainModule:
   let episodes = parseInt(args[1])
   let firstSeed = if args.len >= 3: parseInt(args[2]) else: 1
   let variant = if args.len >= 4: args[3] else: "default"
-  let selection = promptSelection(if args.len == 6:
+  let initialSelection = promptSelection(if args.len == 6:
     %*{"promptVariant": args[4], "promptSeed": parseInt(args[5])} else: newJObject())
-  if selection.selectedVariant in {pvHeldoutBriefing, pvHeldoutReference}:
+  if initialSelection.selectedVariant in {pvHeldoutBriefing, pvHeldoutReference}:
     raise newException(ValueError, "held-out prompt variants are evaluation-only")
   if episodes < 10 or firstSeed < 1:
     quit("at least ten episodes and a positive first seed are required", 1)
@@ -42,6 +42,9 @@ when isMainModule:
     completeEpisodes: seq[string]
     runs = newJArray()
   for seed in firstSeed ..< firstSeed + episodes:
+    var selection = initialSelection
+    if selection.variant == pvMixed:
+      selection.seed += seed - firstSeed
     var config = defaultGameConfig()
     config.update($variantConfig)
     config.seed = seed
@@ -87,6 +90,7 @@ when isMainModule:
     capture.finishMatch(game, esCompleted, newJObject(), initTable[string, DecisionAttempt]())
     completeEpisodes.add(capture.trajectory.eventsJsonl())
     runs.add(%*{"seed": seed, "decisions": decisions,
+      "prompt_selection": selection.selectionMetadata(),
       "azure_goals": game.goals(Azure), "crimson_goals": game.goals(Crimson),
       "azure_score_permille": game.scorePermille(Azure)})
   writePrivate(output / "trajectories.jsonl", completeEpisodes.join(""))
@@ -96,7 +100,7 @@ when isMainModule:
     "variant": variant,
     "source_revision": revision,
     "teacher": "scripted-formation",
-    "prompt_selection": selection.selectionMetadata(),
+    "prompt_selection": initialSelection.selectionMetadata(),
     "game_version": "source-engine-1",
     "engine_version": GameVersion,
     "split_authority": "shared Coworld SDK and application importer by seed_family",
