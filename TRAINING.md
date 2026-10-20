@@ -50,7 +50,7 @@ nim c -d:release --path:src -o:/tmp/cogball-export tools/export_posttrain.nim
 From the shared Metta checkout, validate and convert the raw event stream:
 
 ```bash
-uv run --package metta-posttraining python - <<'PYTHON'
+uv run --package coworld python - <<'PYTHON'
 from pathlib import Path
 from coworld.decision_trajectory import export_complete_episodes, read_trajectory_jsonl
 
