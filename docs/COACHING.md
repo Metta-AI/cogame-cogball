@@ -10,7 +10,9 @@ Forty turns, one directive each. That is the whole game from your side.
 
 ## What your coach is told
 
-The system prompt is fixed and identical for both champions. Your prompt is
+The game selects one rules wording for both champions for the whole episode.
+The default is canonical; `promptVariant` and `promptSeed` select a versioned
+bank without changing either coach's private view or operator guidance. Your prompt is
 appended under a **GUIDANCE FROM YOUR OPERATOR** heading, then the seat's view
 of the pitch:
 

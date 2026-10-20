@@ -38,7 +38,7 @@ jobs:
   # ---------------------------------------------------------------------
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
 
@@ -154,6 +154,7 @@ jobs:
         run: |
           nim c -d:release --path:src -o:/tmp/cogball-train-bridge tools/train_bridge.nim
           python3 tools/test_train_bridge.py /tmp/cogball-train-bridge
+          python3 tools/test_prompt_variants.py /tmp/cogball-train-bridge
 
       - name: Verify private native attempts and socket trust boundaries
         run: |

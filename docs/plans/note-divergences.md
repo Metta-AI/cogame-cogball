@@ -212,3 +212,12 @@ They cannot use hidden sub-centimetre state to choose roles or targets. The cano
 private action preserves the precise target computed from those visible positions;
 spectator directive records retain their existing two-decimal display rounding.
 The physics modules, constants, and stored replay layout are unchanged.
+
+## Episode-stable rules wording
+
+The game can select five training wordings or two held-out evaluation wordings
+for the coaching introduction. Canonical wording remains byte-identical. The
+action schema, intent definitions, numeric rules, operator guidance, controller,
+physics, and replay layout remain unchanged. Selection belongs to the turn engine
+and private provenance, outside simulation state and `gameHash`. Mixed selection
+uses an explicit independent seed and stays fixed for both seats and all retries.

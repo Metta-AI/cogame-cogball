@@ -1,3 +1,4 @@
+import cogball/prompts
 ## The websocket contract, exercised against a REAL server process: the
 ## registration interception, the 403 gate, `/healthz`, the client routes, the
 ## artifact writes, and the two name spaces.
@@ -147,7 +148,7 @@ proc twoNameSpaces() =
   ## The composed LLM user message and the player-stream board labels contain
   ## no real player name, while the chrome roster and results.names do.
   var sim = playing(testConfig())
-  var engine = newTurnEngine(nil)
+  var engine = newTurnEngine(PromptSelection(), nil)
   for seat in Seat:
     engine.policies[seat] = SeatPolicy(kind: pkLlm,
       label: "test")

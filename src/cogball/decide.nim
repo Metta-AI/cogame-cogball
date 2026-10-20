@@ -15,35 +15,11 @@
 import
   std/[json, monotimes, options, strutils, times],
   bitworld/[decision_trajectory, native_stop],
-  sim, directives, baselines, llm
-
-const SystemPrompt* = """You are the coach of a three-robot soccer team in a continuous 2D physics world.
-Every 5 seconds of match time you issue ONE directive for all three of your robots.
-A deterministic controller executes it for the next 5 seconds: it steers each robot
-toward its target, turns it to face where it is going, and kicks when the ball is in
-range and the intent allows it. You do not control motors directly.
-The pitch is 40 by 25 metres and FULLY WALLED - there is no out of play, no corners,
-no throw-ins and no offside. The controller will not let a robot bury the ball on the
-boards: near a wall it aims its kick back toward the middle.
-Reply with a single JSON object and NOTHING else. Your reply MUST begin with '{'.
-Schema:
-{"note":"<=160 chars","robots":[
-  {"id":"<one of your three robot ids>",
-   "role":"keeper|back|wing|striker",
-   "intent":"chase|intercept|hold|shoot|pass|clear|press",
-   "target":[x,y],            // metres, x in [-20,20], y in [-12.5,12.5]
-   "pass_to":"<teammate id or null>",
-   "kick":"auto|never",
-   "say":"<=48 chars"} , ... exactly three, one per robot ]}
-Intents: chase = drive at the ball; intercept = drive to where the ball will be;
-hold = hold the target point and face the ball; shoot = line up behind the ball and
-strike it at their goal; pass = same but aimed at pass_to; clear = hammer it away
-from your own goal; press = shadow the nearest opponent. target is used directly by
-hold and as a bias by the others. kick:"never" makes the robot shepherd the ball
-instead of striking it."""
+  sim, directives, baselines, llm, prompts
 
 type
   BatchCall* = object
+    selection*: PromptSelection
     seat*, maxOutputTokens*: int
     system*, user*: string
     observation*: JsonNode
@@ -75,6 +51,7 @@ type
     status*: ActionStatus
 
   TurnEngine* = ref object
+    selection*: PromptSelection
     batch*: BatchFn
     policies*: array[Seat, SeatPolicy]
     previous*: array[Seat, Directive]
@@ -209,8 +186,8 @@ proc userMessage*(
 # The turn
 # --------------------------------------------------------------------------
 
-proc newTurnEngine*(batch: BatchFn): TurnEngine =
-  result = TurnEngine(batch: batch, guardTurn: -1)
+proc newTurnEngine*(selection: PromptSelection, batch: BatchFn): TurnEngine =
+  result = TurnEngine(selection: selection, batch: batch, guardTurn: -1)
   for seat in Seat:
     result.previous[seat] = emptyDirective(seat)
 
@@ -283,7 +260,7 @@ proc turn*(
       settled[seat] = true
       var teacher = newDecisionAttempt($turnIndex & "-" & $ord(seat) & "-teacher",
         "scripted-" & policy.baseline, if policy.connected: aoTeacher else: aoFallback)
-      teacher.prompt = %*[{"role": "system", "content": SystemPrompt},
+      teacher.prompt = %*[{"role": "system", "content": engine.selection.systemPrompt()},
         {"role": "user", "content": userPrompt(engine.decisions[seat].observation, engine.policies[seat].operatorPrompt)}]
       teacher.parsedAction = actionJson(sim, seat, resolved[seat])
       teacher.response = %($teacher.parsedAction)
@@ -305,9 +282,10 @@ proc turn*(
       })
     else:
       calls.add BatchCall(
+        selection: engine.selection,
         seat: ord(seat),
         maxOutputTokens: sim.config.maxOutputTokens,
-        system: SystemPrompt,
+        system: engine.selection.systemPrompt(),
         user: engine.userMessage(sim, seat, turnIndex),
         observation: engine.decisions[seat].observation)
 
@@ -339,7 +317,7 @@ proc turn*(
           (if reply.attemptId.len > 0: reply.attemptId else: $turnIndex & "-" & $ord(seat) & "-" & $attempt),
           engine.policies[seat].label, if reply.ok: aoUnknown else: aoFallback)
       if reply.evidence.isNone:
-        evidence.prompt = %*[{"role": "system", "content": SystemPrompt},
+        evidence.prompt = %*[{"role": "system", "content": engine.selection.systemPrompt()},
           {"role": "user", "content": userPrompt(engine.decisions[seat].observation, engine.policies[seat].operatorPrompt)}]
         if reply.ok: evidence.response = %reply.text
       if reply.evidence.isNone:

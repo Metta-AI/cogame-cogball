@@ -45,11 +45,25 @@ Export raw complete teacher episodes, then use the shared dataset path:
 ```bash
 nim c -d:release --path:src -o:/tmp/cogball-export tools/export_posttrain.nim
 /tmp/cogball-export /tmp/cogball-corpus 20 1 default
-coworld training export /tmp/cogball-corpus/trajectories.jsonl /tmp/cogball-qualified --transport local
-python -m metta_posttrain.cli export-hosted --source /tmp/cogball-qualified/episodes.jsonl --output /tmp/cogball-dataset --authority /absolute/path/external-review-authority.json
 ```
 
-The shared importer splits by `cogball-<seed>` across variants and retains
+From the shared Metta checkout, validate and convert the raw event stream:
+
+```bash
+uv run --package coworld python - <<'PYTHON'
+from pathlib import Path
+from coworld.decision_trajectory import export_complete_episodes, read_trajectory_jsonl
+
+source = Path("/tmp/cogball-corpus/trajectories.jsonl")
+destination = source.parent / "complete-episodes.jsonl"
+assert export_complete_episodes(read_trajectory_jsonl(source), destination) == 20
+PYTHON
+```
+
+The shared `metta_training.posttrain.hosted.export_hosted` importer requires
+external authority bound to the complete-episode SHA256 and exact source revision.
+Conversion does not grant approval. Select `scripted-formation` explicitly.
+The importer splits by `cogball-<seed>` across variants and retains
 `text_action` metadata. Exported content remains unreviewed until content-bound review.
 Local teacher and HTTP fixture qualification does not establish real hosted archive
 joins, checkpoint model quality, or reinforcement-learning qualification.
@@ -59,3 +73,37 @@ same structured prompt and uses the hosted parser and two-attempt fallback budge
 A first rejection returns the exact next prompt; a second consumes the formation
 fallback and emits `consumed_rejection`, excluding the invalid response from labels.
 The default bridge invocation remains a separate 345-choice numeric research task.
+
+## Prompt diversity
+
+Set `promptVariant` to `canonical`, `plain`, `numbered`, `questions`, or
+`reordered`; `mixed` requires a nonnegative `promptSeed` and selects seed modulo
+five. The game owns selection for the whole episode, both seats, and retries.
+`heldout-briefing` and `heldout-reference` are evaluation-only; training resets
+and source export reject them. The numeric bridge remains canonical.
+
+Language resets accept the same keys and `split` (`train` by default).
+Use `validation` or `test` for held-out wording. Selected message hashes live outside
+the model view. Private hosted captures retain the bank, selection, and seed,
+plus hashes for actual model and teacher attempts after late evidence joins.
+No prompt selector enters simulation state or public replay.
+
+The source exporter accepts `OUTPUT EPISODES FIRST_SEED VARIANT PROMPT_VARIANT
+PROMPT_SEED`. Mixed exports advance the prompt seed per game and record each
+selection. Collect matched seeds in separate output directories for each
+wording. Episode IDs include wording; seed-family IDs do not, so the shared
+importer keeps all variants of a scenario in one split. Commit source first.
+Teacher corpora remain candidates requiring external content-bound review.
+
+For frozen-model evaluation, compare canonical and both held-out wordings on
+matched seeds, seats, opponents, and ordinary match budgets. Report scores,
+invalid replies, fallbacks, and completion rates. Scripted parity verifies
+mechanics; it does not establish better learning or reduced collapse.
+
+Run `python3 tools/test_prompt_variants.py BRIDGE_BINARY` for 16 complete
+language matches across both published variants, seven direct wordings and one
+mixed selection. Checks cover exact prompt hashes, private coach views, actions,
+outcomes and rejection of held-out training selections. The existing native
+trajectory fixture now verifies mixed wording on real player requests while
+retaining attempt, fallback and physical execution checks. The duplicate native
+wording panel is removed.

@@ -1,3 +1,4 @@
+import cogball/prompts
 ## Bounded-orders / legality assertion on the scripted baselines, plus the
 ## round-1 corner regression, pinned.
 
@@ -35,7 +36,7 @@ proc validate(sim: SimServer, seat: Seat, directive: Directive, what: string) =
     doAssert isValidUtf8(order.say), what & ": say is not valid UTF-8"
 
 proc observablePolicyOnly() =
-  let engine = newTurnEngine(nil)
+  let engine = newTurnEngine(PromptSelection(), nil)
   var sim = playing(testConfig())
   sim.robots[0].x = 1_500_000
   for seat in Seat:

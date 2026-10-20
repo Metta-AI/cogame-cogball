@@ -1,5 +1,6 @@
 """Exercise both certified Cogball variants through the numeric protocol."""
 
+import hashlib
 import json
 import random
 import subprocess
@@ -134,9 +135,23 @@ for variant in ("default", "sprint"):
                 assert 0 < observation["semantic_view"]["clock"]["played_s"] < 0.05
             elif decisions == 2:
                 assert observation["semantic_view"]["clock"]["played_s"] == 5
+            view = dict(observation["semantic_view"])
+            metadata = view.pop("prompt_template")
+            assert metadata == {
+                "bank": "cogball-rules-v1",
+                "variant": "canonical",
+                "selection": "canonical",
+                "seed": 0,
+                **{
+                    message["role"] + "_sha256": hashlib.sha256(
+                        message["content"].encode()
+                    ).hexdigest()
+                    for message in observation["messages"]
+                },
+            }
             assert (
                 json.loads(observation["messages"][1]["content"].split("\n\n", 1)[1])
-                == observation["semantic_view"]
+                == view
             )
             if decisions == 0:
                 rejected = request(

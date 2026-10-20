@@ -1,7 +1,7 @@
 ## Game-owned coaching decisions and the three actual robot masks per seat.
 import std/[base64, json, options, tables]
 import bitworld/decision_trajectory
-import decide, roster, sim
+import decide, roster, sim, prompts
 
 type
   CoachExecution* = object
@@ -17,6 +17,7 @@ type
   MatchCapture* = ref object
     trajectory*: DecisionTrajectory
     pending: bool
+    selection: PromptSelection
     decisions: array[Seat, TurnDecision]
     physical: array[Seat, CoachExecution]
     staged: seq[CapturedDecision]
@@ -35,6 +36,7 @@ proc flushTurn*(capture: MatchCapture, endTick: int, terminal = false) =
       doAssert physical.hashes.len == endTick - physical.startTick
       let issued = capture.decisions[seat]
       var observation = copy(issued.observation)
+      observation["prompt_selection"] = capture.selection.selectionMetadata()
       observation["execution"] = if endTick == physical.startTick: newJNull()
         else: %*{"start_tick": physical.startTick,
           "end_tick": endTick, "tick_hz": TargetFps,
@@ -47,6 +49,7 @@ proc flushTurn*(capture: MatchCapture, endTick: int, terminal = false) =
 
 proc beginTurn*(capture: MatchCapture, engine: TurnEngine, sim: SimServer) =
   capture.flushTurn(sim.tickCount)
+  capture.selection = engine.selection
   capture.pending = true
   capture.decisions = engine.decisions
   for seat in Seat:
@@ -75,6 +78,13 @@ proc finishMatch*(capture: MatchCapture, sim: SimServer,
         attempt.accepted = accepted
         attempt.parsedAction = parsed
         attempt.rejectionReason = rejection
+    var promptAttempts = newJArray()
+    for attempt in attempts:
+      if attempt.origin in {aoModel, aoTeacher}:
+        promptAttempts.add(%*{"attempt_id": attempt.attemptId,
+          "prompt_template": capture.selection.promptMetadata(
+            attempt.prompt[0]["content"].getStr(), attempt.prompt[1]["content"].getStr())})
+    staged.observation["prompt_attempts"] = promptAttempts
     capture.trajectory.recordDecision(staged.id, staged.seat, staged.observation,
       attempts, staged.decision.selectedAttemptId, staged.decision.executedAction,
       staged.decision.status, staged.terminal,

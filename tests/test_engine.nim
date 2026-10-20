@@ -1,3 +1,4 @@
+import cogball/prompts
 ## The turn loop against a FAKE LLM transport.
 ##
 ## The central assertion is the batch shape: both seats' calls must go out
@@ -47,7 +48,7 @@ const GoodReply = """{"note":"hold the shape","robots":[
 proc oneParallelBatch() =
   windows.setLen(0)
   var sim = playing(testConfig())
-  var engine = newTurnEngine(parallelFake(GoodReply))
+  var engine = newTurnEngine(PromptSelection(), parallelFake(GoodReply))
   engine.llmSeats()
   engine.turn(sim, 0, 0)
   doAssert windows.len == 2,
@@ -73,7 +74,7 @@ proc perTurnBudgetIsEnforced() =
   sim.config.turnBudgetMs = 300
   sim.config.attempt1Ms = 200
   sim.config.retryMs = 100
-  var engine = newTurnEngine(
+  var engine = newTurnEngine(PromptSelection(),
     proc (calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -103,7 +104,7 @@ proc exactlyOneRetry() =
   ## scripted fallback.
   var sim = playing(testConfig())
   var attempts = 0
-  var engine = newTurnEngine(
+  var engine = newTurnEngine(PromptSelection(),
     proc (calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -120,7 +121,7 @@ proc exactlyOneRetry() =
     doAssert sim.activeDirective[seat].source == dsLlm,
       "the retry did not land"
 
-  var always = newTurnEngine(
+  var always = newTurnEngine(PromptSelection(),
     proc (calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       for call in calls:
@@ -153,7 +154,7 @@ proc transportErrorsAreLabelledByCause() =
                         "transport_error"),
                        ("", "transport_error")]:
     var sim = playing(testConfig())
-    var engine = newTurnEngine(
+    var engine = newTurnEngine(PromptSelection(),
       proc (calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
           {.closure, gcsafe.} =
         for call in calls:
@@ -177,7 +178,7 @@ proc attemptDeadlinesFitTheTurnBudget() =
   ## configured subsecond repair allowance, without extending the turn.
   var sim = playing(testConfig())
   var granted: seq[int64]
-  var engine = newTurnEngine(
+  var engine = newTurnEngine(PromptSelection(),
     proc (calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -197,7 +198,7 @@ proc budgetGuardFires() =
   ## ends complete/full_time rather than deadline.
   var sim = playing(testConfig())
   var calls = 0
-  var engine = newTurnEngine(
+  var engine = newTurnEngine(PromptSelection(),
     proc (batch: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -227,7 +228,7 @@ proc budgetGuardStillEndsFullTime() =
   ## plays the episode out.
   var sim = playing(testConfig(maxTicks = 600))
   var calls = 0
-  var engine = newTurnEngine(
+  var engine = newTurnEngine(PromptSelection(),
     proc (batch: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -272,7 +273,7 @@ proc budgetGuardStillEndsFullTime() =
 proc missingPlayerFallsBackInstantly() =
   ## With no player transport every turn falls back without a network wait.
   var sim = playing(testConfig())
-  var engine = newTurnEngine(nil)
+  var engine = newTurnEngine(PromptSelection(), nil)
   engine.llmSeats()
   let started = nowMs()
   for turn in 0 ..< 40:
@@ -288,7 +289,7 @@ proc playerFallbackCauseIsPreserved() =
   ## The player owns credentials, so its typed failure cause reaches replay.
   proc causesFor(cause: string): seq[string] =
     var sim = playing(testConfig())
-    var engine = newTurnEngine(
+    var engine = newTurnEngine(PromptSelection(),
       proc (calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
           {.closure, gcsafe.} =
         for call in calls:
@@ -312,7 +313,7 @@ proc playerFallbackCauseIsPreserved() =
 proc scriptedSeatsNeverCallOut() =
   var sim = playing(testConfig())
   var calls = 0
-  var engine = newTurnEngine(
+  var engine = newTurnEngine(PromptSelection(),
     proc (batch: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
@@ -560,7 +561,7 @@ proc disconnectKeepsPlaying() =
   ## A seat that drops mid-match keeps playing on the scripted layer, and
   ## revives on reconnect. No failure mode leaves a robot unactuated.
   var sim = playing(testConfig())
-  var engine = newTurnEngine(parallelFake(GoodReply))
+  var engine = newTurnEngine(PromptSelection(), parallelFake(GoodReply))
   engine.llmSeats()
   engine.turn(sim, 0, 0)
   doAssert sim.activeDirective[Crimson].source == dsLlm

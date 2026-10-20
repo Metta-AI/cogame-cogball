@@ -37,7 +37,7 @@ import
   bitworld/[runtime, decision_trajectory, native_stop, artifact_runtime],
   bitworld/spriteprotocol,
   mummy,
-  sim, roster, control, directives, decide,
+  sim, roster, control, directives, decide, prompts,
   global, broadcast, replays, replay_runtime, events, wire_constants, training_capture, native_exchange
 
 when defined(posix):
@@ -542,6 +542,7 @@ proc playerBatch(
         continue
       socket.send($( %*{"type": "decision", "decision_id": issued.id,
         "seat": call.seat, "observation": call.observation,
+        "prompt_template": call.selection.promptMetadata(call.system, call.user),
         "messages": [{"role": "system", "content": call.system},
           {"role": "user", "content": call.user}],
         "transport": {"budget_ms": max(0'i64, (deadline - getMonoTime()).inMilliseconds),
@@ -668,7 +669,8 @@ proc runGameLoop(
       config.wallClockBudgetSeconds, ")"
 
   let exchange = newNativeExchange()
-  var engine = newTurnEngine(nil)
+  var engine = newTurnEngine(promptSelection(parseJson(
+    if runtimeConfig.config.len > 0: runtimeConfig.config else: "{}")), nil)
   for seat in Seat:
     engine.policies[seat] = SeatPolicy(
       kind: pkScripted, baseline: "formation", label: "formation")
