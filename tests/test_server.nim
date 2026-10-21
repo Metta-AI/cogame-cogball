@@ -1,3 +1,4 @@
+import cogball/prompts
 ## The websocket contract, exercised against a REAL server process: the
 ## registration interception, the 403 gate, `/healthz`, the client routes, the
 ## artifact writes, and the two name spaces.
@@ -20,12 +21,13 @@ proc registrationShape() =
   let text = $(%*{
     "type": "register",
     "kind": "prompt",
+    "prompt": "",
     "scripted": newJNull(),
     "policy": repeat("\u00e9", 200)
   })
   let node = parseJson(text)
   doAssert node{"type"}.getStr() == "register"
-  doAssert not node.hasKey("prompt"), "the strategy reached the game"
+  doAssert node["prompt"].kind == JString, "private registration needs the exact strategy"
   let label = clipRunes(node{"policy"}.getStr(), MaxPolicyRunes)
   doAssert label.runeCount <= MaxPolicyRunes
   doAssert isValidUtf8(label),
@@ -53,11 +55,8 @@ proc nonRegistrationChatIsDropped() =
   report "non-registration chat from a player is dropped"
 
 proc registrationIsNotEchoedIntoTheReplay() =
-  ## Even a malformed client that includes PLAYER_PROMPT cannot put it in
-  ## the replay. The shipped player sends only a kind and label; the server
-  ## writes a redacted `register` record instead, carrying the policy label and
-  ## kind and nothing else. Asserted on the bytes, through the same writer the
-  ## server uses.
+  ## The server retains the exact operator prompt privately and issues it to
+  ## the native caller. Its public register record keeps only label and kind.
   let secret = "never leak this coaching prompt, it is the whole strategy"
   let registration = $(%*{
     "type": "register", "kind": "prompt", "prompt": secret,
@@ -67,6 +66,7 @@ proc registrationIsNotEchoedIntoTheReplay() =
   let reg = registrationOf(registration, Azure, none)
   doAssert reg.ok, "a well-formed registration was not accepted"
   doAssert reg.policy.kind == pkLlm, "a prompt did not make an LLM seat"
+  doAssert reg.policy.operatorPrompt == secret
   doAssert reg.record.len > 0, "a first registration earned no record"
   doAssert not reg.record.contains(secret),
     "the register record echoes the prompt: " & reg.record
@@ -148,7 +148,7 @@ proc twoNameSpaces() =
   ## The composed LLM user message and the player-stream board labels contain
   ## no real player name, while the chrome roster and results.names do.
   var sim = playing(testConfig())
-  var engine = newTurnEngine(nil)
+  var engine = newTurnEngine(PromptSelection(), nil)
   for seat in Seat:
     engine.policies[seat] = SeatPolicy(kind: pkLlm,
       label: "test")

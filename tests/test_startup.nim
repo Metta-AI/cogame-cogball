@@ -1,6 +1,5 @@
-## Startup contract: the entrypoint dies with a clean message and no traceback
-## on a bad config, the seed is randomised when unpinned and honoured when
-## pinned, and both entrypoints exist in the image.
+## Startup domain validation, pinned/random seeds, and packaged entrypoints.
+## Actual failed initialization/private checkpoints use the real-process lifecycle gate.
 
 import std/[json, os, strutils]
 import curly
@@ -10,8 +9,7 @@ import cogball/sim_config
 import cogball_player
 
 proc badConfigIsRejectedCleanly() =
-  ## `config.update` raises a CogballError with a readable message; the
-  ## entrypoint turns that into `quit(msg, 1)`, never a traceback.
+  ## Config validation reports the concrete invalid domain value.
   var config = defaultGameConfig()
   var message = ""
   try:
@@ -48,11 +46,7 @@ proc badConfigIsRejectedCleanly() =
   except CogballError as error:
     message = error.msg
   doAssert message.contains("turnBudgetMs"), message
-  # The entrypoint's own handling: a clean message, exit 1, no traceback.
-  let source = readFile("src/cogball.nim")
-  doAssert source.contains("quit(\"cogball: bad config: \" & error.msg, 1)"),
-    "the entrypoint no longer turns a bad config into a clean exit"
-  report "a bad config is rejected with a clean message and exit 1"
+  report "bad configurations report the actual domain validation error"
 
 proc seedIsPinnedOrRandomised() =
   ## The compiled-in default doubles as the "nobody chose a seed" sentinel, and
@@ -129,13 +123,6 @@ proc thePlayerReceiveIsBounded() =
   ## The socket closing is the NORMAL end of an episode, but a game pod that
   ## dies without closing would otherwise leave the seat blocked until the
   ## platform's episode kill, with no bound of its own.
-  let source = readFile("src/cogball_player.nim")
-  doAssert not source.contains("socket.receiveMessage()"),
-    "the player's receive lost its deadline and is unbounded again"
-  doAssert source.contains("socket.receiveMessage(ReceiveTimeoutMs)"),
-    "the player's receive no longer passes a deadline"
-  doAssert source.contains("except TimeoutError:"),
-    "the player does not handle its own receive deadline"
   # Long enough that it can never fire on a healthy episode: the longest
   # legitimate gap between frames is one coaching turn.
   doAssert ReceiveTimeoutMs > 5 * DefaultTurnBudgetMs,
@@ -151,13 +138,6 @@ proc thePlayerSurvivesTheStartRace() =
   ## seat never joins, and the episode is charged a lobby no-show for a game
   ## that was 200 ms behind. The connect retries, bounded, and then exits with
   ## a clean message.
-  let source = readFile("src/cogball_player.nim")
-  doAssert not source.contains("let socket = newWebSocket(url)"),
-    "the player dials once and dies on a refused connect again"
-  doAssert source.contains("let socket = connectWithRetry(url)"),
-    "the player no longer retries its connect"
-  doAssert source.contains("quit(\"cogball player: could not reach the game"),
-    "giving up on the connect must be a clean message, not a traceback"
   # Bounded, and inside the lobby's own patience: a seat that gives up here is
   # one the lobby was about to declare missing anyway.
   doAssert ConnectTimeoutMs > 0

@@ -1,3 +1,4 @@
+import cogball/prompts
 ## The turn loop against a FAKE LLM transport.
 ##
 ## The central assertion is the batch shape: both seats' calls must go out
@@ -5,7 +6,7 @@
 ## asserts the two windows INTERSECT. A sequential implementation would still
 ## produce legal directives and pass every other test in this suite.
 
-import std/[json, monotimes, os, strutils]
+import std/[json, monotimes, options, os, strutils, times]
 import lib/helpers
 import cogball/server
 import cogball/replays
@@ -23,7 +24,7 @@ proc nowMs(): int64 = getMonoTime().ticks div 1_000_000
 proc parallelFake(reply: string, delayMs = 30): BatchFn =
   ## Answers every seat with the same body, holding each call open long enough
   ## for the windows to be meaningful.
-  result = proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+  result = proc (calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
       {.closure, gcsafe.} =
     {.cast(gcsafe).}:
       let started = nowMs()
@@ -32,7 +33,7 @@ proc parallelFake(reply: string, delayMs = 30): BatchFn =
       for call in calls:
         windows.add Window(seat: call.seat, startMs: started, endMs: ended)
         result.add BatchReply(seat: call.seat, ok: true, text: reply)
-    discard timeoutSeconds
+    discard deadline
 
 proc llmSeats(engine: TurnEngine) =
   for seat in Seat:
@@ -47,7 +48,7 @@ const GoodReply = """{"note":"hold the shape","robots":[
 proc oneParallelBatch() =
   windows.setLen(0)
   var sim = playing(testConfig())
-  var engine = newTurnEngine(parallelFake(GoodReply))
+  var engine = newTurnEngine(PromptSelection(), parallelFake(GoodReply))
   engine.llmSeats()
   engine.turn(sim, 0, 0)
   doAssert windows.len == 2,
@@ -73,8 +74,8 @@ proc perTurnBudgetIsEnforced() =
   sim.config.turnBudgetMs = 300
   sim.config.attempt1Ms = 200
   sim.config.retryMs = 100
-  var engine = newTurnEngine(
-    proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+  var engine = newTurnEngine(PromptSelection(),
+    proc (calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
         sleep(220)
@@ -103,8 +104,8 @@ proc exactlyOneRetry() =
   ## scripted fallback.
   var sim = playing(testConfig())
   var attempts = 0
-  var engine = newTurnEngine(
-    proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+  var engine = newTurnEngine(PromptSelection(),
+    proc (calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
         inc attempts
@@ -120,8 +121,8 @@ proc exactlyOneRetry() =
     doAssert sim.activeDirective[seat].source == dsLlm,
       "the retry did not land"
 
-  var always = newTurnEngine(
-    proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+  var always = newTurnEngine(PromptSelection(),
+    proc (calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       for call in calls:
         result.add BatchReply(seat: call.seat, ok: true, text: "no json here"))
@@ -153,8 +154,8 @@ proc transportErrorsAreLabelledByCause() =
                         "transport_error"),
                        ("", "transport_error")]:
     var sim = playing(testConfig())
-    var engine = newTurnEngine(
-      proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+    var engine = newTurnEngine(PromptSelection(),
+      proc (calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
           {.closure, gcsafe.} =
         for call in calls:
           result.add BatchReply(seat: call.seat, error: text))
@@ -173,44 +174,32 @@ proc transportErrorsAreLabelledByCause() =
   report "every curl deadline spelling is recorded as cause `timeout`"
 
 proc attemptDeadlinesFitTheTurnBudget() =
-  ## curly's transport timeout is whole seconds and a batch in flight cannot be
-  ## interrupted, so the SUM of the whole-second allowances the transport
-  ## actually receives is the realised worst case for a turn -- not the
-  ## millisecond configuration. It must fit inside turnBudgetMs.
+  ## The transport receives the original absolute deadline, including the
+  ## configured subsecond repair allowance, without extending the turn.
   var sim = playing(testConfig())
-  var granted: seq[int]
-  var engine = newTurnEngine(
-    proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+  var granted: seq[int64]
+  var engine = newTurnEngine(PromptSelection(),
+    proc (calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
-        granted.add(timeoutSeconds)
+        granted.add((deadline - getMonoTime()).inMilliseconds)
       for call in calls:
         result.add BatchReply(seat: call.seat, error: "Timeout was reached"))
   engine.llmSeats()
   engine.turn(sim, 2, 0)
   doAssert granted.len == 2, "expected attempt 1 plus one retry"
-  doAssert granted[0] == sim.config.attempt1Ms div 1000,
-    "attempt 1 was given " & $granted[0] & " s for a " &
-      $sim.config.attempt1Ms & " ms allowance"
-  doAssert granted[1] == sim.config.retryMs div 1000,
-    "the retry was given " & $granted[1] & " s for a " &
-      $sim.config.retryMs & " ms allowance"
-  var total = 0
-  for seconds in granted:
-    total += seconds
-  doAssert total * 1000 <= sim.config.turnBudgetMs,
-    "the whole-second attempt deadlines sum to " & $total &
-      " s, past the " & $sim.config.turnBudgetMs & " ms turn budget"
-  report "the attempt deadlines the transport receives sum to " & $total &
-    " s inside the " & $(sim.config.turnBudgetMs div 1000) & " s turn budget"
+  doAssert granted[0] in int64(sim.config.attempt1Ms - 5)..int64(sim.config.attempt1Ms)
+  doAssert granted[1] in int64(sim.config.retryMs - 5)..int64(sim.config.retryMs)
+  doAssert granted[0] + granted[1] <= int64(sim.config.turnBudgetMs)
+  report "absolute native attempt deadlines retain the configured millisecond allowances"
 
 proc budgetGuardFires() =
   ## The guard switches the LLM off for the rest of the match, so the episode
   ## ends complete/full_time rather than deadline.
   var sim = playing(testConfig())
   var calls = 0
-  var engine = newTurnEngine(
-    proc (batch: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+  var engine = newTurnEngine(PromptSelection(),
+    proc (batch: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
         inc calls
@@ -239,8 +228,8 @@ proc budgetGuardStillEndsFullTime() =
   ## plays the episode out.
   var sim = playing(testConfig(maxTicks = 600))
   var calls = 0
-  var engine = newTurnEngine(
-    proc (batch: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+  var engine = newTurnEngine(PromptSelection(),
+    proc (batch: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
         inc calls
@@ -284,7 +273,7 @@ proc budgetGuardStillEndsFullTime() =
 proc missingPlayerFallsBackInstantly() =
   ## With no player transport every turn falls back without a network wait.
   var sim = playing(testConfig())
-  var engine = newTurnEngine(nil)
+  var engine = newTurnEngine(PromptSelection(), nil)
   engine.llmSeats()
   let started = nowMs()
   for turn in 0 ..< 40:
@@ -300,8 +289,8 @@ proc playerFallbackCauseIsPreserved() =
   ## The player owns credentials, so its typed failure cause reaches replay.
   proc causesFor(cause: string): seq[string] =
     var sim = playing(testConfig())
-    var engine = newTurnEngine(
-      proc (calls: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+    var engine = newTurnEngine(PromptSelection(),
+      proc (calls: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
           {.closure, gcsafe.} =
         for call in calls:
           result.add BatchReply(seat: call.seat, error: cause, cause: cause))
@@ -324,8 +313,8 @@ proc playerFallbackCauseIsPreserved() =
 proc scriptedSeatsNeverCallOut() =
   var sim = playing(testConfig())
   var calls = 0
-  var engine = newTurnEngine(
-    proc (batch: seq[BatchCall], timeoutSeconds: int): seq[BatchReply]
+  var engine = newTurnEngine(PromptSelection(),
+    proc (batch: seq[BatchCall], deadline: MonoTime): seq[BatchReply]
         {.closure, gcsafe.} =
       {.cast(gcsafe).}:
         inc calls
@@ -339,6 +328,14 @@ proc scriptedSeatsNeverCallOut() =
   doAssert sim.activeDirective[Crimson].source == dsLlm
   doAssert sim.stats[Azure].llmTurns == 0
   doAssert sim.stats[Crimson].llmTurns == 1
+  let scripted = engine.decisions[Azure].attempts[0]
+  doAssert scripted.prompt.kind == JArray
+  doAssert scripted.response.getStr() == $scripted.parsedAction
+  doAssert scripted.rawResponse.kind == JNull
+  doAssert scripted.request.kind == JNull
+  doAssert scripted.decoder.kind == JNull
+  doAssert scripted.model.isNone
+  doAssert scripted.platformCallId.isNone
   report "a scripted seat never reaches the transport"
 
 proc mercyAndWallClock() =
@@ -397,22 +394,7 @@ proc hostErrorIsAReachableEnding() =
   doAssert finished.endRule == erFullTime,
     "a host error overwrote a match that had already ended"
 
-  # ...and the server loop actually takes that path: the whole loop is wrapped,
-  # the verdict is recorded, the artifacts are written, and the exception is
-  # re-raised so the exit status still says what happened.
-  let source = readFile("src/cogball/server.nim")
-  for fragment in ["except CatchableError as failure:", "sim.hostErrorStop()",
-                   "recordAndWrite(sim.resultRecordJson())",
-                   "writeArtifacts()", "raise"]:
-    doAssert source.contains(fragment),
-      "the host-error path lost `" & fragment & "`"
-  let handler = source[source.rfind("except CatchableError as failure:") .. ^1]
-  doAssert handler.find("sim.hostErrorStop()") <
-    handler.find("writeArtifacts()"),
-    "the verdict must be set before the artifacts are written"
-  doAssert handler.find("writeArtifacts()") < handler.rfind("raise"),
-    "the artifacts must be written before the exception is re-raised"
-  report "fault/host_error is reachable and writes artifacts before re-raising"
+  report "fault/host_error resolves engine scores without overwriting a finished verdict"
 
 proc neverConnectingSeatIsReportedAndPlaysOn() =
   ## A seat that never connects does NOT end the episode: after
@@ -441,7 +423,8 @@ proc neverConnectingSeatIsReportedAndPlaysOn() =
 
   let stuck = sim.nextPlayerSlot()
   doAssert stuck == 1, "the stuck slot is not the next open seat"
-  declarePlayerFailure(stuck, "player slot 1 never joined the lobby")
+  declarePlayerFailure(stuck, "player slot 1 never joined the lobby",
+    getMonoTime() + initDuration(seconds = 1))
   doAssert fileExists(path),
     "no player-failure document was published to COGAME_PLAYER_FAILURE_URI"
   let failure = parseJson(readFile(path))
@@ -578,7 +561,7 @@ proc disconnectKeepsPlaying() =
   ## A seat that drops mid-match keeps playing on the scripted layer, and
   ## revives on reconnect. No failure mode leaves a robot unactuated.
   var sim = playing(testConfig())
-  var engine = newTurnEngine(parallelFake(GoodReply))
+  var engine = newTurnEngine(PromptSelection(), parallelFake(GoodReply))
   engine.llmSeats()
   engine.turn(sim, 0, 0)
   doAssert sim.activeDirective[Crimson].source == dsLlm

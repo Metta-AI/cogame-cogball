@@ -4,7 +4,7 @@
 
 import
   std/[json, os, sysrand],
-  bitworld/runtime,
+  bitworld/[runtime, decision_trajectory],
   cogball/sim,
   cogball/server
 
@@ -56,47 +56,44 @@ proc echoStartupConfig(config: GameConfig, runtimeConfig: RuntimeConfig) =
     " fastMode=", config.fastMode
 
 when isMainModule:
-  var runtimeConfig: RuntimeConfig
-  try:
-    runtimeConfig = readRuntimeConfig()
-  except CatchableError as error:
-    quit("cogball: " & error.msg, 1)
-
-  var config = defaultGameConfig()
-  try:
+  block gameMain:
+    var config = defaultGameConfig()
+    var transferred = false
+    defer:
+      if not transferred: config.writeInitializationCheckpoint(esFailed)
+    let runtimeConfig = readRuntimeConfig()
     if seedPinned(runtimeConfig.config):
       config.update(runtimeConfig.config)
     else:
       config.seed = randomSeed()
       config.update(stripUnpinnedSeed(runtimeConfig.config))
       echo "seed not pinned; randomized"
-  except CatchableError as error:
-    # A clean message and a non-zero exit, never a traceback: the runner reads
-    # this line, and tests/test_startup.nim pins it.
-    quit("cogball: bad config: " & error.msg, 1)
-  config.echoStartupConfig(runtimeConfig)
+    if not runtimeConfig.replayMode and config.maxOutputTokens <= 0:
+      raise newException(CogballError, "maxOutputTokens must be positive for live inference")
+    config.echoStartupConfig(runtimeConfig)
 
-  let localReplayPath =
-    if runtimeConfig.replayUri.len > 0:
-      getTempDir() / ("cogball-replay-" & $getCurrentProcessId() & ".bitreplay")
-    else:
-      ""
-  let loadReplayPath =
-    if runtimeConfig.replayMode:
-      let path = getTempDir() / ("cogball-load-replay-" &
-        $getCurrentProcessId() & ".bitreplay")
-      writeFile(path, runtimeConfig.replay)
-      path
-    else:
-      ""
+    let localReplayPath =
+      if runtimeConfig.replayUri.len > 0:
+        getTempDir() / ("cogball-replay-" & $getCurrentProcessId() & ".bitreplay")
+      else:
+        ""
+    let loadReplayPath =
+      if runtimeConfig.replayMode:
+        let path = getTempDir() / ("cogball-load-replay-" &
+          $getCurrentProcessId() & ".bitreplay")
+        writeFile(path, runtimeConfig.replay)
+        path
+      else:
+        ""
 
-  echo "starting cogball on ", runtimeConfig.host, ":", runtimeConfig.port
-  runServerLoop(
-    runtimeConfig.host,
-    runtimeConfig.port,
-    config,
-    localReplayPath,
-    loadReplayPath,
-    "",
-    runtimeConfig
-  )
+    echo "starting cogball on ", runtimeConfig.host, ":", runtimeConfig.port
+    transferred = true
+    runServerLoop(
+      runtimeConfig.host,
+      runtimeConfig.port,
+      config,
+      localReplayPath,
+      loadReplayPath,
+      "",
+      runtimeConfig
+    )

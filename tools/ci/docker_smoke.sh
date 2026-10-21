@@ -31,7 +31,8 @@
 #   SMOKE_REQUIRE_REPLAY_JSON  1 = replay must parse as JSON    (1)
 #                              set 0 for binary replay formats
 #   SMOKE_EXTRA_ENV            extra "K=V K=V" for every player (empty)
-#   ANTHROPIC_API_KEY          if set, forwarded to prompt player containers
+#   COWORLD_LLM_ENDPOINT      optional native sidecar reachable from containers
+#   COWORLD_LLM_MODEL         requested native model (default native model)
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -180,10 +181,10 @@ chmod 777 "${work_dir}"
 # --------------------------------------------------------------------------
 docker network create "${network}" >/dev/null
 
-if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-  echo "ANTHROPIC_API_KEY present: prompt players can call the model"
+if [ -n "${COWORLD_LLM_ENDPOINT:-}" ]; then
+  echo "native sidecar configured for prompt players"
 else
-  echo "no ANTHROPIC_API_KEY: prompt players will use scripted fallback"
+  echo "no native sidecar: prompt players use unsupervised fallback"
 fi
 
 echo "starting game container (${image} ${game_bin}) ..."
@@ -201,8 +202,9 @@ docker run -d --name "${prefix}-game" \
 for ((slot = 0; slot < seats; slot++)); do
   eval "penv=( $(cat "${work_dir}/env-${slot}.args") )"
   eval "pcmd=( $(cat "${work_dir}/cmd-${slot}.args") )"
-  if [ -n "${ANTHROPIC_API_KEY:-}" ] && [[ " ${penv[*]} " == *"PLAYER_PROMPT="* ]]; then
-    penv+=(-e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
+  if [ -n "${COWORLD_LLM_ENDPOINT:-}" ] && [[ " ${penv[*]} " == *"PLAYER_PROMPT="* ]]; then
+    penv+=(-e "COWORLD_LLM_ENDPOINT=${COWORLD_LLM_ENDPOINT}"
+      -e "COWORLD_LLM_MODEL=${COWORLD_LLM_MODEL:-anthropic/claude-haiku-4.5}")
   fi
   docker run -d --name "${prefix}-p${slot}" --network "${network}" \
     -e COWORLD_PLAYER_WS_URL="ws://${prefix}-game:${port}/player?slot=${slot}&token=token-${slot}" \

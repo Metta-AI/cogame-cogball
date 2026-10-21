@@ -5,8 +5,7 @@
 ##   attempt 1 batch deadline   6.0 s   (config attempt1Ms)
 ##   retry batch deadline       2.5 s   (config retryMs)
 ##   outer monotonic turn cap   9.0 s   (config turnBudgetMs)
-## Player request timeouts use whole seconds, so each allowance is floored before
-## it is handed over: 6 s + 2 s = 8 s realised worst case, inside the 9 s cap.
+## Both attempts receive absolute monotonic deadlines inside the original turn cap.
 ## 40 turns x 9.0 s = 360 s against a 720 s budget, with a 690 s engine stop.
 ##
 ## Seats are NEVER queried sequentially. The transport is injected as a
@@ -15,56 +14,33 @@
 
 import
   std/[json, monotimes, options, strutils, times],
-  bitworld/decision_trajectory,
-  sim, directives, baselines, llm
-
-const SystemPrompt* = """You are the coach of a three-robot soccer team in a continuous 2D physics world.
-Every 5 seconds of match time you issue ONE directive for all three of your robots.
-A deterministic controller executes it for the next 5 seconds: it steers each robot
-toward its target, turns it to face where it is going, and kicks when the ball is in
-range and the intent allows it. You do not control motors directly.
-The pitch is 40 by 25 metres and FULLY WALLED - there is no out of play, no corners,
-no throw-ins and no offside. The controller will not let a robot bury the ball on the
-boards: near a wall it aims its kick back toward the middle.
-Reply with a single JSON object and NOTHING else. Your reply MUST begin with '{'.
-Schema:
-{"note":"<=160 chars","robots":[
-  {"id":"<one of your three robot ids>",
-   "role":"keeper|back|wing|striker",
-   "intent":"chase|intercept|hold|shoot|pass|clear|press",
-   "target":[x,y],            // metres, x in [-20,20], y in [-12.5,12.5]
-   "pass_to":"<teammate id or null>",
-   "kick":"auto|never",
-   "say":"<=48 chars"} , ... exactly three, one per robot ]}
-Intents: chase = drive at the ball; intercept = drive to where the ball will be;
-hold = hold the target point and face the ball; shoot = line up behind the ball and
-strike it at their goal; pass = same but aimed at pass_to; clear = hammer it away
-from your own goal; press = shadow the nearest opponent. target is used directly by
-hold and as a bias by the others. kick:"never" makes the robot shepherd the ball
-instead of striking it."""
+  bitworld/[decision_trajectory, native_stop],
+  sim, directives, baselines, llm, prompts
 
 type
   BatchCall* = object
-    seat*: int
+    selection*: PromptSelection
+    seat*, maxOutputTokens*: int
     system*, user*: string
+    observation*: JsonNode
 
   BatchReply* = object
     seat*: int
     ok*: bool
     text*: string
     error*: string
-    cause*: string
+    cause*, attemptId*: string
     evidence*: Option[DecisionAttempt]
 
   BatchFn* = proc (
     calls: seq[BatchCall],
-    timeoutSeconds: int
+    deadline: MonoTime
   ): seq[BatchReply] {.closure, gcsafe.}
 
   SeatPolicy* = object
     kind*: PolicyKind
     baseline*: string
-    label*: string
+    label*, operatorPrompt*: string
     connected*: bool
 
   TurnDecision* = object
@@ -75,6 +51,7 @@ type
     status*: ActionStatus
 
   TurnEngine* = ref object
+    selection*: PromptSelection
     batch*: BatchFn
     policies*: array[Seat, SeatPolicy]
     previous*: array[Seat, Directive]
@@ -203,14 +180,14 @@ proc userMessage*(
   seat: Seat,
   turn: int
 ): string =
-  $engine.seatViewJson(sim, seat, turn)
+  userPrompt(engine.seatViewJson(sim, seat, turn), engine.policies[seat].operatorPrompt)
 
 # --------------------------------------------------------------------------
 # The turn
 # --------------------------------------------------------------------------
 
-proc newTurnEngine*(batch: BatchFn): TurnEngine =
-  result = TurnEngine(batch: batch, guardTurn: -1)
+proc newTurnEngine*(selection: PromptSelection, batch: BatchFn): TurnEngine =
+  result = TurnEngine(selection: selection, batch: batch, guardTurn: -1)
   for seat in Seat:
     result.previous[seat] = emptyDirective(seat)
 
@@ -283,15 +260,10 @@ proc turn*(
       settled[seat] = true
       var teacher = newDecisionAttempt($turnIndex & "-" & $ord(seat) & "-teacher",
         "scripted-" & policy.baseline, if policy.connected: aoTeacher else: aoFallback)
-      teacher.prompt = %*[{"role": "system", "content": SystemPrompt},
-        {"role": "user", "content": $engine.decisions[seat].observation}]
+      teacher.prompt = %*[{"role": "system", "content": engine.selection.systemPrompt()},
+        {"role": "user", "content": userPrompt(engine.decisions[seat].observation, engine.policies[seat].operatorPrompt)}]
       teacher.parsedAction = actionJson(sim, seat, resolved[seat])
       teacher.response = %($teacher.parsedAction)
-      teacher.rawResponse = %($teacher.parsedAction)
-      teacher.model = some("scripted-" & policy.baseline)
-      teacher.request = %*{"teacher": "scripted-" & policy.baseline,
-        "observation": engine.decisions[seat].observation}
-      teacher.decoder = %*{"method": "deterministic"}
       teacher.accepted = policy.connected
       engine.decisions[seat].attempts = @[teacher]
       if policy.connected:
@@ -310,12 +282,15 @@ proc turn*(
       })
     else:
       calls.add BatchCall(
+        selection: engine.selection,
         seat: ord(seat),
-        system: SystemPrompt,
-        user: engine.userMessage(sim, seat, turnIndex))
+        maxOutputTokens: sim.config.maxOutputTokens,
+        system: engine.selection.systemPrompt(),
+        user: engine.userMessage(sim, seat, turnIndex),
+        observation: engine.decisions[seat].observation)
 
   var attempt = 1
-  while calls.len > 0 and attempt <= 2:
+  while calls.len > 0 and attempt <= 2 and not interruptionRequested():
     let
       remainingMs = (deadline - getMonoTime()).inMilliseconds
       wantMs = if attempt == 1: sim.config.attempt1Ms else: sim.config.retryMs
@@ -325,14 +300,8 @@ proc turn*(
     let started = getMonoTime()
     var replies: seq[BatchReply]
     try:
-      # FLOOR, not ceiling: curly's timeout is whole seconds and a batch in
-      # flight is not interruptible, so rounding 2500 ms up to 3 s would let
-      # the retry run past the turn budget the outer deadline is supposed to
-      # enforce. Floored, the realised worst case is attempt 1 6 s + retry 2 s
-      # = 8 s inside the 9 s turnBudgetMs cap. The one-second minimum is
-      # curly's own floor; it only bites when under a second is left, which is
-      # already past the point where a batch can usefully be issued.
-      replies = engine.batch(calls, max(1, allowedMs div 1000))
+      replies = engine.batch(calls, min(deadline,
+        started + initDuration(milliseconds = allowedMs)))
     except CatchableError as failure:
       replies = @[]
       for call in calls:
@@ -344,12 +313,12 @@ proc turn*(
       var cause = ""
       var detail = reply.error
       var evidence = if reply.evidence.isSome: reply.evidence.get()
-        else: newDecisionAttempt($turnIndex & "-" & $ord(seat) & "-" & $attempt,
+        else: newDecisionAttempt(
+          (if reply.attemptId.len > 0: reply.attemptId else: $turnIndex & "-" & $ord(seat) & "-" & $attempt),
           engine.policies[seat].label, if reply.ok: aoUnknown else: aoFallback)
-      evidence.attemptId = $turnIndex & "-" & $ord(seat) & "-" & $attempt
       if reply.evidence.isNone:
-        evidence.prompt = %*[{"role": "system", "content": SystemPrompt},
-          {"role": "user", "content": $engine.decisions[seat].observation}]
+        evidence.prompt = %*[{"role": "system", "content": engine.selection.systemPrompt()},
+          {"role": "user", "content": userPrompt(engine.decisions[seat].observation, engine.policies[seat].operatorPrompt)}]
         if reply.ok: evidence.response = %reply.text
       if reply.evidence.isNone:
         evidence.latencyMs = some(float(latency))
@@ -399,8 +368,9 @@ proc turn*(
           detail = failure.msg
       if cause.len > 0:
         evidence.accepted = false
-        if evidence.origin == aoModel and evidence.response.kind == JNull and evidence.rawResponse.kind == JNull:
-          detail = "incomplete_native_attempt: " & cause & " before HTTP response"
+        if evidence.origin == aoModel and evidence.response.kind == JNull and
+            evidence.responseComplete != some(true):
+          detail = "incomplete_native_attempt: " & cause & " without a received completion"
         evidence.rejectionReason = some(detail)
       engine.decisions[seat].attempts.add(evidence)
       if cause.len > 0:
@@ -414,6 +384,16 @@ proc turn*(
             retry.add call
     calls = retry
     inc attempt
+
+  if interruptionRequested():
+    for seat in Seat:
+      engine.decisions[seat].selectedAttemptId = none(string)
+      engine.decisions[seat].executedAction = newJNull()
+      engine.decisions[seat].status = asRejected
+      for evidence in engine.decisions[seat].attempts.mitems:
+        evidence.accepted = false
+        evidence.rejectionReason = some("episode interrupted before directive installation")
+    return
 
   for call in calls:
     # Two consecutive failures: the seat plays `formation` this turn.

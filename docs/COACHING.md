@@ -10,7 +10,9 @@ Forty turns, one directive each. That is the whole game from your side.
 
 ## What your coach is told
 
-The system prompt is fixed and identical for both champions. Your prompt is
+The game selects one rules wording for both champions for the whole episode.
+The default is canonical; `promptVariant` and `promptSeed` select a versioned
+bank without changing either coach's private view or operator guidance. Your prompt is
 appended under a **GUIDANCE FROM YOUR OPERATOR** heading, then the seat's view
 of the pitch:
 
@@ -120,7 +122,7 @@ coworld upload-policy coworld-cogball:latest \
   --name my-cogball \
   --run /bin/cogball-player \
   --secret-env PLAYER_PROMPT="<your strategy>" \
-  --use-bedrock --bedrock-model anthropic/claude-haiku-4.5
+  --use-llm --llm-model anthropic/claude-haiku-4.5
 ```
 
 `PLAYER_SCRIPTED=formation` or `PLAYER_SCRIPTED=swarm` fields a built-in
@@ -131,10 +133,9 @@ baseline instead — the same directive shape, no LLM, microseconds per turn.
 Every wait is bounded. Both seats' requests go out as **one parallel batch** per
 turn with a 6.0 s deadline; anything that timed out, errored, returned non-JSON
 or returned no usable robot entry is retried **once** as a single batch with a
-2.5 s deadline, all inside a 9.0 s monotonic per-turn cap. (The player request
-uses whole-second allowances, so each
-allowance is floored before it is handed over: 6 s + 2 s = 8 s realised worst
-case.) Two consecutive
+2.5 s deadline, all inside a 9.0 s monotonic per-turn cap. Player transport
+allowances remain in milliseconds: 6000 for the first attempt and 2500 for
+repair, clipped to the remaining 9000 ms absolute turn deadline. Two consecutive
 failures play the `formation` directive and write a `fallback` record naming the
 cause. If the wall clock gets close to the budget, a `budget_guard` record fires
 and the rest of the match runs on the scripted layer, so the episode ends
