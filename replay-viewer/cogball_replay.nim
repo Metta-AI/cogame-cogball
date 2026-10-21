@@ -132,3 +132,6 @@ when isMainModule and defined(emscripten):
   # main through emscripten's live-runtime exit skips the destructor epilogue
   # entirely, so globals stay valid for the life of the page.
   emscriptenExitWithLiveRuntime()
+
+when defined(cogballPolyworldProof):
+  include ../experiments/polyworld_replay/wasm_probe

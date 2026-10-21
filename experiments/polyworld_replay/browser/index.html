@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cogball — experimental Polyworld replay</title>
+<style>body{margin:0;background:#090d17;color:#eee;font:16px sans-serif}canvas{display:block;width:100%;height:calc(100vh - 100px)}nav{padding:10px}input{width:85px}pre{margin:8px}</style>
+<canvas id="canvas" aria-label="Six robot soccer replay"></canvas>
+<nav><button id="play" disabled>Play</button> <button id="pause" disabled>Pause</button>
+<label>Tick <input id="tick" type="number" min="0" max="1352" value="0"></label>
+<button id="seek" disabled>Seek</button></nav><pre id="status">Loading experiment…</pre>
+<script src="replay.js"></script><script src="cogball_browser.js"></script>
