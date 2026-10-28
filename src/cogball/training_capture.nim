@@ -1,5 +1,5 @@
 ## Game-owned coaching decisions and the three actual robot masks per seat.
-import std/[base64, json, options, tables]
+import std/[base64, json, monotimes, options, tables]
 import bitworld/decision_trajectory
 import decide, roster, sim, prompts
 
@@ -65,9 +65,15 @@ proc recordTick*(capture: MatchCapture, masks: array[RobotCount, uint8],
       capture.physical[seat].hashes.add($sim.gameHash())
 
 proc finishMatch*(capture: MatchCapture, sim: SimServer,
-    status: EpisodeStatus, cleanup: JsonNode, updates: Table[string, DecisionAttempt]) =
+    status: EpisodeStatus, cleanup: JsonNode, updates: Table[string, DecisionAttempt],
+    deadline = none(MonoTime)) =
+  template requirePreparationBudget() =
+    if deadline.isSome and getMonoTime() >= deadline.get():
+      raise newException(IOError, "private capture preparation deadline exceeded")
+  requirePreparationBudget()
   capture.flushTurn(sim.tickCount, true)
   for staged in capture.staged:
+    requirePreparationBudget()
     var attempts = staged.decision.attempts
     for attempt in attempts.mitems:
       if updates.hasKey(attempt.attemptId):
@@ -89,6 +95,7 @@ proc finishMatch*(capture: MatchCapture, sim: SimServer,
       attempts, staged.decision.selectedAttemptId, staged.decision.executedAction,
       staged.decision.status, staged.terminal,
       (if staged.decision.status == asFallback: some("engine-formation") else: none(string)))
+  requirePreparationBudget()
   let results = parseJson(sim.playerResultsJson())
   results["player_cleanup"] = cleanup
   results["engine_version"] = %GameVersion
@@ -98,3 +105,4 @@ proc finishMatch*(capture: MatchCapture, sim: SimServer,
       "goals": sim.goals(seat), "win": sim.seatWon(seat)}
   capture.trajectory.finish(status, results,
     if status == esCompleted: participants else: newJNull())
+  requirePreparationBudget()

@@ -766,7 +766,17 @@ proc runGameLoop(
   proc writeArtifacts(requestedStatus: EpisodeStatus) =
     # Mark the seal before any operation that can fail; never retry a partial seal.
     finalizationStarted = true
-    let cleanupDeadline = getMonoTime() + initDuration(milliseconds = 5000)
+    let finalizationStart = getMonoTime()
+    let cleanupDeadline = finalizationStart + initDuration(milliseconds = 5000)
+    let nativeCompleted = requestedStatus == esCompleted
+    let privateDeadline = if nativeCompleted:
+        cleanupDeadline - initDuration(milliseconds = 500)
+      else: cleanupDeadline
+    proc finalizationStage(stage: string, detail = "") =
+      echo "cogball finalization: ", $(%*{"stage": stage, "detail": detail,
+        "elapsed_ms": (getMonoTime() - finalizationStart).inMilliseconds,
+        "remaining_ms": (cleanupDeadline - getMonoTime()).inMilliseconds})
+    finalizationStage("stop_requested")
     let acknowledgementDeadline = cleanupDeadline - initDuration(milliseconds = 1000)
     let issuedStopAt = getMonoTime()
     var stopId: string
@@ -809,31 +819,65 @@ proc runGameLoop(
       cleanup.add(%*{"seat": slot,
         "decision_id": (if exchange.latest.hasKey(socket): %exchange.latest[socket] else: newJNull()),
         "status": (if socket in acknowledged: "acknowledged" else: "unresolved")})
-    var status = requestedStatus
-    if status == esCompleted and acknowledged.len != exchange.targets.len: status = esTruncated
+    var privateStatus = requestedStatus
+    if privateStatus == esCompleted and acknowledged.len != exchange.targets.len:
+      privateStatus = esTruncated
+    finalizationStage("cleanup_resolved", $acknowledged.len & "/" & $exchange.targets.len)
     withLock appState.lock: appState.sealed = true
-    replayWriter.closeReplayWriter()
+    var replayClosed = false
+    try:
+      replayWriter.closeReplayWriter()
+      replayClosed = true
+    except CatchableError as error:
+      finalizationStage("replay_close_failed", error.msg)
+
+    # Publish the native replay before private preparation can fail. Keep
+    # RESULTS last: the runner may tear down the pod when that artifact appears.
+    if nativeCompleted:
+      if runtimeConfig.replayUri.len > 0:
+        try:
+          if not replayClosed: raise newException(IOError, "native replay did not close")
+          writeCogameArtifact(runtimeConfig.replayUri, readFile(saveReplayPath),
+            "application/octet-stream", CogameSaveReplayUriEnv, privateDeadline)
+          finalizationStage("replay_published")
+        except CatchableError as error:
+          finalizationStage("replay_publication_failed", error.msg)
+      if eventsPath.len > 0:
+        try:
+          writeCogameArtifact("file://" & eventsPath, collectedEvents.eventsJsonl(sim.tickCount),
+            "application/x-ndjson", "COGAME_EVENTS_URI", privateDeadline)
+          finalizationStage("events_published")
+        except CatchableError as error:
+          finalizationStage("events_publication_failed", error.msg)
+
     if capture.isSome:
-      capture.get().finishMatch(sim, status, cleanup, exchange.finalAttempts())
-      let methodName = getEnv("COGAME_SAVE_TRAJECTORY_METHOD", "PUT")
-      let methodValue = case methodName
-        of "PUT": ahPut
-        of "POST": ahPost
-        else: raise newException(ValueError, "trajectory method must be PUT or POST")
-      capture.get().trajectory.writeTrajectoryArtifact(trajectoryUri, cleanupDeadline, methodValue)
-    if status != esCompleted: return
-    if runtimeConfig.replayUri.len > 0:
-      writeCogameArtifact(runtimeConfig.replayUri, readFile(saveReplayPath),
-        "application/octet-stream", CogameSaveReplayUriEnv, cleanupDeadline)
-    if eventsPath.len > 0:
-      writeCogameArtifact("file://" & eventsPath, collectedEvents.eventsJsonl(sim.tickCount),
-        "application/x-ndjson", "COGAME_EVENTS_URI", cleanupDeadline)
+      try:
+        # This earlier absolute deadline reserves the final 500 ms for RESULTS.
+        # Staging cooperatively checks it; serialization/local filesystem calls
+        # are not preempted. A private failure is a gap, never completed evidence.
+        capture.get().finishMatch(sim, privateStatus, cleanup, exchange.finalAttempts(),
+          some(privateDeadline))
+        finalizationStage("private_prepared")
+        let methodName = getEnv("COGAME_SAVE_TRAJECTORY_METHOD", "PUT")
+        let methodValue = case methodName
+          of "PUT": ahPut
+          of "POST": ahPost
+          else: raise newException(ValueError, "trajectory method must be PUT or POST")
+        capture.get().trajectory.writeTrajectoryArtifact(trajectoryUri, privateDeadline, methodValue)
+        finalizationStage("private_published")
+      except CatchableError as error:
+        finalizationStage("private_publication_failed", error.msg)
+    if not nativeCompleted: return
+    finalizationStage("results_start")
     if runtimeConfig.resultsUri.len > 0:
       writeCogameArtifact(runtimeConfig.resultsUri, sim.playerResultsJson() & "\n",
         "application/json", CogameResultsUriEnv, cleanupDeadline)
+      finalizationStage("results_published")
     elif saveScoresPath.len > 0:
       writeCogameArtifact("file://" & saveScoresPath, sim.playerResultsJson() & "\n",
         "application/json", CogameResultsUriEnv, cleanupDeadline)
+      finalizationStage("results_published")
+    else: finalizationStage("results_not_configured")
     echo "Results: ", sim.playerResultsJson()
 
   ownerReady = true
