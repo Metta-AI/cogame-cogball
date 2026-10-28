@@ -10,32 +10,32 @@ Sprite v1.
 
 The game container reads and writes the standard `COGAME_*` URIs:
 
-| variable | meaning |
-|---|---|
-| `COGAME_CONFIG_URI` | the episode config JSON (read at startup) |
-| `COGAME_RESULTS_URI` | the results document (written once, at game over) |
-| `COGAME_SAVE_REPLAY_URI` | the `COWLDBAL` replay bytes |
-| `COGAME_LOAD_REPLAY_URI` | a replay to serve instead of playing a match |
-| `COGAME_PLAYER_FAILURE_URI` | `{"failed_policy_index": N, "message": "…"}` |
-| `COGAME_SAVE_TRAJECTORY_URI` | private decision attempts and complete outcome (scoped file/PUT URI) |
-| `COWORLD_EPISODE_ID`, `COWORLD_GAME_VERSION`, `COWORLD_SOURCE_REVISION` | required immutable identity when private capture is enabled |
-| `COGAME_EVENTS_URI` | the tier-2 JSON-lines analysis stream (`file://` only) |
-| `COGAME_HOST` / `COGAME_PORT` | the bind address (default `0.0.0.0:8080`) |
-| `COWORLD_LLM_ENDPOINT`, `COWORLD_LLM_MODEL` | selected player native sidecar and requested model |
+| variable                                                                | meaning                                                              |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `COGAME_CONFIG_URI`                                                     | the episode config JSON (read at startup)                            |
+| `COGAME_RESULTS_URI`                                                    | the results document (written once, at game over)                    |
+| `COGAME_SAVE_REPLAY_URI`                                                | the `COWLDBAL` replay bytes                                          |
+| `COGAME_LOAD_REPLAY_URI`                                                | a replay to serve instead of playing a match                         |
+| `COGAME_PLAYER_FAILURE_URI`                                             | `{"failed_policy_index": N, "message": "…"}`                         |
+| `COGAME_SAVE_TRAJECTORY_URI`                                            | private decision attempts and complete outcome (scoped file/PUT URI) |
+| `COWORLD_EPISODE_ID`, `COWORLD_GAME_VERSION`, `COWORLD_SOURCE_REVISION` | required immutable identity when private capture is enabled          |
+| `COGAME_EVENTS_URI`                                                     | the tier-2 JSON-lines analysis stream (`file://` only)               |
+| `COGAME_HOST` / `COGAME_PORT`                                           | the bind address (default `0.0.0.0:8080`)                            |
+| `COWORLD_LLM_ENDPOINT`, `COWORLD_LLM_MODEL`                             | selected player native sidecar and requested model                   |
 
 ## Routes
 
-| route | method | purpose |
-|---|---|---|
-| `/healthz` | GET | liveness; returns `healthy` |
-| `/player?slot=N&token=T` | GET (ws) | one seat's stream |
-| `/global` | GET (ws) | the spectator board |
-| `/replay` | GET (ws) | the replay board (replay mode) |
-| `/client/global`, `/client/player` | GET | the bitworld generic clients |
-| `/client/replay` | GET | the designed broadcast client, **live pod only** |
-| `/client/league` | GET | the League Replayer shell (embeds the above) |
-| `/client/font.ttf` | GET | the chrome font |
-| `/replay-data` | GET | the current replay bytes |
+| route                              | method   | purpose                                          |
+| ---------------------------------- | -------- | ------------------------------------------------ |
+| `/healthz`                         | GET      | liveness; returns `healthy`                      |
+| `/player?slot=N&token=T`           | GET (ws) | one seat's stream                                |
+| `/global`                          | GET (ws) | the spectator board                              |
+| `/replay`                          | GET (ws) | the replay board (replay mode)                   |
+| `/client/global`, `/client/player` | GET      | the bitworld generic clients                     |
+| `/client/replay`                   | GET      | the designed broadcast client, **live pod only** |
+| `/client/league`                   | GET      | the League Replayer shell (embeds the above)     |
+| `/client/font.ttf`                 | GET      | the chrome font                                  |
+| `/replay-data`                     | GET      | the current replay bytes                         |
 
 **The hosted replay viewer is never one of these routes.** It is the STATIC
 wasm bundle: `coworld_manifest_template.json` declares
@@ -66,13 +66,13 @@ then the raw payload) carrying:
  "policy":"<free label>"}
 ```
 
-* `prompt` and `external` policies receive decision requests over the same player
+- `prompt` and `external` policies receive decision requests over the same player
   socket. The player runs inference and returns a directive. The game receives
   no model credential. Private `training_attempt` metadata carries the exact
   inference prompt, request, response, and actual native provenance.
-* `scripted` selects a built-in baseline; an unknown or absent value is
+- `scripted` selects a built-in baseline; an unknown or absent value is
   `formation`.
-* `policy` is a free label, capped at **48 runes**, recorded in the replay.
+- `policy` is a free label, capped at **48 runes**, recorded in the replay.
 
 The payload is read WITHOUT an ASCII filter, so a non-ASCII policy label
 survives to the replay intact. The server retains registration when a player
@@ -87,11 +87,17 @@ Sprite chat text is dropped; decisions use WebSocket text messages.
 At a turn boundary the game issues an opaque, nonempty string identity:
 
 ```json
-{"type":"decision","decision_id":"<issued identity>","seat":0,
- "observation":{"turn":0},
- "messages":[{"role":"system","content":"<rules>"},
-             {"role":"user","content":"<private guidance and observation>"}],
- "transport":{"budget_ms":6000,"cleanup_budget_ms":5000,"max_output_tokens":900}}
+{
+  "type": "decision",
+  "decision_id": "<issued identity>",
+  "seat": 0,
+  "observation": { "turn": 0 },
+  "messages": [
+    { "role": "system", "content": "<rules>" },
+    { "role": "user", "content": "<private guidance and observation>" }
+  ],
+  "transport": { "budget_ms": 6000, "cleanup_budget_ms": 5000, "max_output_tokens": 900 }
+}
 ```
 
 Both seats receive the same frozen simulation state before either response is awaited.
@@ -126,8 +132,20 @@ The game retains late facts before nonce/window checks and returns
 `evidence_received` with the echoed identities. The player waits for that receipt
 before closing. Self-initiated stop may use a null nonce, without acknowledgement credit.
 
-Unresolved cleanup yields private `truncated` status and no normal public result or replay.
-All private and public artifact writes share one absolute cleanup deadline.
+Native match completeness controls public results and replay. Unresolved cleanup
+keeps the private episode `truncated`; it does not erase a legitimately complete
+native outcome. An unfinished/deadline/fault simulation retains its existing
+classification and does not gain a normal public result.
+
+Finalization retains its original five-second absolute cleanup deadline and
+four-second acknowledgement window. For a complete native match, replay/events
+are attempted first, then private preparation/upload, with an earlier deadline
+that reserves the final 500 ms for results. RESULTS are written last because the
+runner may tear down the pod once they appear. Private staging checks its budget
+cooperatively; serialization and local filesystem calls are not preempted.
+A failed or timed-out private publication is an explicit unconfirmed/missing-artifact gap,
+never successful evidence. Replay/events failures are reported separately.
+Public results still use the original absolute deadline.
 
 `training_attempt` is an optional private Bitworld evidence object; explicit null
 means no supplied evidence. The engine owns inference mode, acceptance, parsed
@@ -150,7 +168,7 @@ the episode seed; **real player names** (board labels carry only `Azure`/
 A seat sends **no motor inputs** — the server computes every actuator mask — so the
 Sprite v1 Ready packet (`0x85`) is legitimate after each received frame and is
 what lets `fastMode` pace the match by readiness. (ctf's warning about `0x85`
-corrupting input timing is about *player* clients whose own inputs are
+corrupting input timing is about _player_ clients whose own inputs are
 dead-reckoned; that hazard does not exist here.)
 
 ## The replay bytes
@@ -159,14 +177,14 @@ The replay is the starter's **binary `COWLDBAL`** format — the same format the
 static wasm viewer parses. Everything the viewer needs is in the bytes; no
 server is contacted except S3 for the file.
 
-| content | carries |
-|---|---|
-| header | magic `COWLDBAL`, format version, game name `cogball`, game version `1` |
+| content     | carries                                                                                                           |
+| ----------- | ----------------------------------------------------------------------------------------------------------------- |
+| header      | magic `COWLDBAL`, format version, game name `cogball`, game version `1`                                           |
 | config JSON | seed, `num_agents`, `maxTicks`, `turnTicks`, every physics constant, `players[].name`, `slots[].team`, `fastMode` |
-| joins | per seat: name, slot, token |
-| inputs | per **robot** (0..5), on change: the `uint8` actuator mask — the action log |
-| chats | the `register` / `directive` / `fallback` / `budget_guard` / `result` records |
-| hashes | one `gameHash` per tick — the integrity chain the viewer checks |
+| joins       | per seat: name, slot, token                                                                                       |
+| inputs      | per **robot** (0..5), on change: the `uint8` actuator mask — the action log                                       |
+| chats       | the `register` / `directive` / `fallback` / `budget_guard` / `result` records                                     |
+| hashes      | one `gameHash` per tick — the integrity chain the viewer checks                                                   |
 
 Masks are indexed by **robot**, not by roster slot, and a player leaving does
 **not** shift the mask arrays: cogball's six robots are fixed for the whole
@@ -174,13 +192,13 @@ match.
 
 ### Record vocabulary
 
-| `k` | fields |
-|---|---|
-| `register` | `seat`, `alias`, `policy` (≤48 runes), `kind` (`llm`\|`scripted`), `baseline` |
-| `directive` | `turn`, `seat`, `alias`, `source` (`llm`\|`scripted`\|`fallback`), `latency_ms`, `note`, `robots`:[{`id`,`role`,`intent`,`target`,`pass_to`,`kick`,`say`}] |
-| `fallback` | `turn`, `seat`, `attempt` (1\|2), `cause`, `detail` (≤200 runes) |
-| `budget_guard` | `turn`, `remaining_s` |
-| `result` | the full results document, written once at game over |
+| `k`            | fields                                                                                                                                                     |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `register`     | `seat`, `alias`, `policy` (≤48 runes), `kind` (`llm`\|`scripted`), `baseline`                                                                              |
+| `directive`    | `turn`, `seat`, `alias`, `source` (`llm`\|`scripted`\|`fallback`), `latency_ms`, `note`, `robots`:[{`id`,`role`,`intent`,`target`,`pass_to`,`kick`,`say`}] |
+| `fallback`     | `turn`, `seat`, `attempt` (1\|2), `cause`, `detail` (≤200 runes)                                                                                           |
+| `budget_guard` | `turn`, `remaining_s`                                                                                                                                      |
+| `result`       | the full results document, written once at game over                                                                                                       |
 
 Every record is capped at **900 runes**, on a rune boundary.
 
@@ -215,21 +233,23 @@ key for key; that schema is `additionalProperties: false` and the certifier
 rejects any unknown field.
 
 ```json
-{"names": ["daveey", "daveey-1"],
- "scores": [0.667, 0.333],
- "win": [true, false],
- "team": ["azure", "crimson"],
- "goals": [2, 1],
- "shots": [9, 6],
- "shotsOnTarget": [4, 2],
- "saves": [1, 3],
- "possessionTicks": [2640, 2160],
- "llmTurns": [40, 0],
- "fallbackTurns": [0, 0],
- "reason": "complete",
- "endRule": "full_time",
- "finalTick": 4800,
- "seed": 679961}
+{
+  "names": ["daveey", "daveey-1"],
+  "scores": [0.667, 0.333],
+  "win": [true, false],
+  "team": ["azure", "crimson"],
+  "goals": [2, 1],
+  "shots": [9, 6],
+  "shotsOnTarget": [4, 2],
+  "saves": [1, 3],
+  "possessionTicks": [2640, 2160],
+  "llmTurns": [40, 0],
+  "fallbackTurns": [0, 0],
+  "reason": "complete",
+  "endRule": "full_time",
+  "finalTick": 4800,
+  "seed": 679961
+}
 ```
 
 `names` are the **real policy names** (spectator side). `team` carries the

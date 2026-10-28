@@ -5,6 +5,15 @@ Private trajectories stage every issued attempt until readers join and cleanup i
 They retain actual native headers, byte prefixes, completion flags, and received identities.
 They never enter spectator replay records or the player Docker image.
 
+A complete native match can publish public outcomes while its private cleanup
+status remains truncated. Missing acknowledgements never become completed private
+evidence. Replay/events precede a bounded private finalization attempt; results
+come last under the original five-second deadline, with 500 ms reserved for them.
+Private upload failure leaves an explicit unconfirmed-publication gap even if its
+attempted payload had been sealed. Neither public success nor an unacknowledged
+or unpublished private payload establishes admission. Finalization stage timings
+are logged; CPU serialization and local filesystem work are not preempted.
+
 Set `COGAME_SAVE_TRAJECTORY_URI`, `COWORLD_EPISODE_ID`, `COWORLD_GAME_VERSION`, and
 `COWORLD_SOURCE_REVISION` on the game. Runtime injection also supplies the registered
 `COWORLD_GAME_NAME` and immutable `COWORLD_GAME_IMAGE_DIGEST`. Production provenance must identify the actual
