@@ -1,15 +1,15 @@
 """A new viewer receives the actual frozen board during a native HTTP wait."""
 
 import http.server
-from collections import Counter
 import json
 import os
-import socket
 import signal
+import socket
 import subprocess
 import sys
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 from websockets.sync.client import connect
@@ -194,11 +194,7 @@ try:
         release.set()
     for index, process in enumerate(processes):
         assert process.wait(timeout=240 if interrupt == "full_match" else 10) == (
-            -signal.SIGKILL
-            if interrupt == "disconnect" and index == 1
-            else 1
-            if interrupt == "upload_failure" and index == 0
-            else 0
+            -signal.SIGKILL if interrupt == "disconnect" and index == 1 else 0
         )
     events = [
         json.loads(line) for line in (output / "private.jsonl").read_text().splitlines()
@@ -207,17 +203,36 @@ try:
     if interrupt == "upload_failure":
         assert artifact_requests == ["/private"]
         assert terminal["status"] == "completed"
-        assert (
-            not (output / "results.json").exists()
-            and not (output / "replay.bitreplay").exists()
-        )
+        # The fixture retains the attempted body, not a successful publication.
+        from replay_summary import parse as parse_replay
+
+        result = json.loads((output / "results.json").read_text())
+        assert result["reason"] == "complete" and result["endRule"] == "full_time"
+        assert all(terminal["outcome"][key] == value for key, value in result.items())
+        replay = (output / "replay.bitreplay").read_bytes()
+        assert parse_replay(replay)["results"] == result
+        log = (output / "game.log").read_text()
+        stages = [
+            json.loads(line.split("cogball finalization: ", 1)[1])
+            for line in log.splitlines()
+            if line.startswith("cogball finalization: ")
+        ]
+        failed = [
+            stage for stage in stages if stage["stage"] == "private_publication_failed"
+        ]
+        assert len(failed) == 1 and "503" in failed[0]["detail"]
+        assert not any(stage["stage"] == "private_published" for stage in stages)
         print(
             json.dumps(
                 {
                     "case": "upload_failure",
                     "private_requests": 1,
-                    "public_writes": 0,
-                    "scope": "actual private HTTP503 propagates, no second seal",
+                    "private_publication": "UNPUBLISHED: actual HTTP503",
+                    "attempted_private_body": "private.jsonl; forensic fixture copy only",
+                    "admitted_targets": 0,
+                    "public_writes": 2,
+                    "native_completion": "complete/full_time",
+                    "scope": "private HTTP503 isolated; public native outcome preserved",
                 }
             )
         )
